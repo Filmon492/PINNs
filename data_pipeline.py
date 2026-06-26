@@ -2,6 +2,7 @@ import numpy as np
 from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.preprocessing import RobustScaler
 
 # Data loading and column renaming
 CSV_PATH = Path("data/coal_gas_20250826.csv")
@@ -151,6 +152,40 @@ def make_train_val_split(
 
     return final_train_df, val_df
 
+# Scaling and target transform
+def scale_features_and_target(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_names: list[str],
+):
+    scaler = RobustScaler()
+
+    X_train = scaler.fit_transform(train_df[feature_names])
+    X_val = scaler.transform(val_df[feature_names])
+    X_test = scaler.transform(test_df[feature_names])
+
+    y_train = np.log(train_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
+    y_val = np.log(val_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
+    y_test = np.log(test_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
+
+    raw_pressure_train = train_df["pressure_MPa"].to_numpy().reshape(-1, 1)
+    raw_pressure_val = val_df["pressure_MPa"].to_numpy().reshape(-1, 1)
+    raw_pressure_test = test_df["pressure_MPa"].to_numpy().reshape(-1, 1)
+
+    return {
+        "scaler": scaler,
+        "X_train": X_train,
+        "X_val": X_val,
+        "X_test": X_test,
+        "y_train": y_train,
+        "y_val": y_val,
+        "y_test": y_test,
+        "raw_pressure_train": raw_pressure_train,
+        "raw_pressure_val": raw_pressure_val,
+        "raw_pressure_test": raw_pressure_test,
+    }
+
 if __name__== "__main__":
     df = load_data_csv()
     df = validate_data(df)
@@ -158,7 +193,8 @@ if __name__== "__main__":
     df, feature_names = engineer_features(df)
     train_val_df, test_df = make_main_split(df)
     train_df, val_df = make_train_val_split(train_val_df)
-
+    
+   
     print("Full data:", df.shape)
     print("Train data:", train_df.shape)
     print("Validation data:", val_df.shape)
@@ -174,3 +210,9 @@ if __name__== "__main__":
     print("Train experiments:", train_df["experiment_id"].nunique())
     print("Validation experiments:", val_df["experiment_id"].nunique())
     print("Test experiments:", test_df["experiment_id"].nunique())
+    print()
+
+    arrays = scale_features_and_target(train_df, val_df, test_df, feature_names)
+    print("X_train:", arrays["X_train"].shape)
+    print("y_train:", arrays["y_train"].shape)
+    print("raw_pressure_train:", arrays["raw_pressure_train"].shape)
