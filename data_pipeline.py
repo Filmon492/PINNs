@@ -121,27 +121,56 @@ def make_main_split(df: pd.DataFrame, test_size=0.2, random_state=42) -> tuple[p
         raise ValueError(f"Experiment leakage detected: {overlap}")
     return train_df, test_df
 
+# Experiment-level train/validation split
+def make_train_val_split(
+    train_df: pd.DataFrame,
+    val_size: float = 0.2,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=val_size,
+        random_state=random_state,
+    )
+
+    train_idx, val_idx = next(
+        splitter.split(train_df, groups=train_df["experiment_id"])
+    )
+
+    final_train_df = train_df.iloc[train_idx].reset_index(drop=True)
+    val_df = train_df.iloc[val_idx].reset_index(drop=True)
+
+    train_experiments = set(final_train_df["experiment_id"])
+    val_experiments = set(val_df["experiment_id"])
+
+    overlap = train_experiments.intersection(val_experiments)
+
+    if overlap:
+        raise ValueError(f"Train/validation leakage detected: {overlap}")
+
+    return final_train_df, val_df
+
 if __name__== "__main__":
     df = load_data_csv()
     df = validate_data(df)
     df = infer_experiment_id(df)
     df, feature_names = engineer_features(df)
-    train_df, test_df = make_main_split(df)
-
-    print("Feature names:")
-    print(feature_names)
-    print()
+    train_val_df, test_df = make_main_split(df)
+    train_df, val_df = make_train_val_split(train_val_df)
 
     print("Full data:", df.shape)
     print("Train data:", train_df.shape)
+    print("Validation data:", val_df.shape)
     print("Test data:", test_df.shape)
-    print()
-
-    print("Total experiments:", df["experiment_id"].nunique())
-    print("Train experiments:", train_df["experiment_id"].nunique())
-    print("Test experiments:", test_df["experiment_id"].nunique())
     print()
 
     print("Experiment overlap:")
     print(set(train_df["experiment_id"]).intersection(set(test_df["experiment_id"])))
-    
+    print(set(val_df["experiment_id"]).intersection(set(train_df["experiment_id"])))
+    print()
+
+    print("Total experiments:", df["experiment_id"].nunique())
+    print("Train experiments:", train_df["experiment_id"].nunique())
+    print("Validation experiments:", val_df["experiment_id"].nunique())
+    print("Test experiments:", test_df["experiment_id"].nunique())
