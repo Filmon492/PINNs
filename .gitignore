@@ -1,0 +1,17 @@
+.venv/
+.latex-build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.DS_Store
+
+runs/
+results/
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt

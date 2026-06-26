@@ -1,0 +1,1175 @@
+% !TeX root = report.tex
+\documentclass[12pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{mdframed}
+\usepackage{listings}
+\usepackage{setspace}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usepackage{multirow}
+\usepackage{makecell}
+
+\definecolor{blueprompt}{RGB}{0,80,160}
+\definecolor{mathcolor}{RGB}{140,0,0}
+\definecolor{stepcolor}{RGB}{0,120,60}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{framecolor}{RGB}{180,180,180}
+\definecolor{warningcolor}{RGB}{180,100,0}
+\definecolor{novelcolor}{RGB}{80,0,120}
+\definecolor{rationalecolor}{RGB}{0,100,140}
+\definecolor{changecolor}{RGB}{0,100,0}
+
+\lstset{
+  backgroundcolor=\color{lightgray},
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{framecolor}
+}
+
+\newmdenv[linecolor=blueprompt,backgroundcolor=blue!4,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{promptbox}
+
+\newmdenv[linecolor=stepcolor,backgroundcolor=green!4,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{stepbox}
+
+\newmdenv[linecolor=mathcolor,backgroundcolor=red!4,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{mathbox}
+
+\newmdenv[linecolor=rationalecolor,backgroundcolor=cyan!4,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{rationalebox}
+
+\newmdenv[linecolor=novelcolor,backgroundcolor=violet!4,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{novelbox}
+
+\newmdenv[linecolor=warningcolor,backgroundcolor=orange!4,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{warningbox}
+
+\newmdenv[linecolor=changecolor,backgroundcolor=green!3,linewidth=1.5pt,
+  innerleftmargin=10pt,innerrightmargin=10pt,
+  innertopmargin=8pt,innerbottommargin=8pt]{changebox}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\textcolor{blueprompt}{\textbf{Blueprint: Option 2 v3}}}
+\lhead{\textcolor{gray}{Hard vs.\ Soft Constraint PINN --- v3 Revised}}
+\rfoot{Page \thepage}
+
+\onehalfspacing
+
+\begin{document}
+
+%------------------------------------------------------
+\begin{titlepage}
+\centering\vspace*{1.5cm}
+{\LARGE\bfseries\color{blueprompt}PINN RESEARCH BLUEPRINT}\\[0.4cm]
+{\large\color{gray}Research Direction 2.2 $\cdot$ Version 3 $\cdot$ June 2026}\\[1.2cm]
+{\Large\bfseries
+Hard vs.\ Soft Thermodynamic Constraint Enforcement 
+in Physics-Informed Neural Networks\\[0.25cm]
+for Sorption in Heterogeneous Porous Media}\\[1.8cm]
+{\large\color{gray}
+Implementation Blueprint $\cdot$ Mathematical Foundations $\cdot$\\
+Unified Statistical Evaluation Harness $\cdot$ Manuscript Architecture}\\[1.2cm]
+
+\vfill{\large\today}
+\end{titlepage}
+
+%------------------------------------------------------
+\tableofcontents\newpage
+
+%======================================================
+\section{Research Vision, Gap, and Novel Contributions}
+%======================================================
+
+\subsection{The Central Scientific Question}
+
+When physical laws are known and must be respected by a neural network
+prediction, \emph{how} those laws are enforced matters. Soft constraints
+penalize violations during training but allow them to persist ---
+especially under extrapolation beyond the training distribution.
+Hard constraints eliminate violations structurally, by construction,
+but restrict the optimization landscape and may impose computational
+costs. The fundamental question is:
+
+\begin{center}
+\textit{Does guaranteeing thermodynamic validity by construction
+outperform penalizing violations, and at what cost in accuracy,
+calibration, and computational efficiency?}
+\end{center}
+
+\subsection{Why This Has Not Been Done Before}
+
+Hard constraint PINNs exist in fluid dynamics (topology optimization,
+PDE boundary conditions) and structural mechanics. However:
+\begin{itemize}
+  \item No study applies hard constraints to equilibrium isotherm
+    sorption models where constraints have a different mathematical
+    character (algebraic inequalities and functional form requirements,
+    not PDE boundary conditions).
+  \item No study systematically compares \emph{each} physics constraint
+    independently in a factorial design, isolating marginal contributions.
+  \item No study evaluates hard vs.\ soft constraints specifically
+    under \emph{extrapolation} to out-of-distribution coal ranks and
+    pressures, which is the operationally critical scenario.
+  \item No study combines the hard vs.\ soft comparison with calibrated
+    Bayesian uncertainty quantification, asking whether hard constraints
+    improve not just accuracy but predictive reliability.
+\end{itemize}
+
+\subsection{Potential Novel Contributions}
+
+\begin{novelbox}
+\textbf{Contribution 1:} Systematic hard vs.\ soft constraint
+comparison for sorption isotherms in geological materials, using a
+factorial ablation design that isolates and quantifies the
+marginal benefit of each constraint independently and jointly.
+
+\textbf{Contribution 2:} Three architectural strategies for
+hard constraint enforcement in sorption PINNs: sigmoid-bounded
+output activations (bounds), non-negative pressure pathway networks
+(monotonicity), and gauge function parameterization (Sips/Arrhenius).
+The Sips gauge strategy is shown to simultaneously enforce bounds,
+monotonicity, and isotherm functional form as a unified architectural
+choice.
+
+\textbf{Contribution 3:} Three-tier extrapolation evaluation ---
+interpolation, rank extrapolation, and pressure extrapolation ---
+as a standardized benchmark for physical validity under distribution
+shift, showing the greatest hard constraint advantage (to be tested!)
+precisely where soft constraints fail most.
+
+\textbf{Contribution 4:} Physical violation rate as a first-class
+evaluation metric with bootstrap confidence intervals, enabling
+statistical comparison of constraint enforcement strategies on
+safety-relevant properties, not just accuracy.
+
+\textbf{Contribution 5:} Constraint interaction analysis via $2\times2$
+ANOVA revealing whether hard enforcement of multiple constraints
+produces superadditive, additive, or antagonistic effects. Ablation
+design is structured to avoid confounding of interaction terms.
+
+\textbf{Contribution 6:} Physics parameter interpretability from the
+gauge function Sips variant --- the network predicts physically
+meaningful $[\hat{q}_{\max}, \hat{K}, \hat{n}]$ across coal ranks,
+validated against classical isotherm literature values and SHAP/ALE
+attribution. Similarly, the Arrhenius variant yields interpretable
+$\Delta\hat{H}$ values validatable against calorimetric measurements.
+\end{novelbox}
+
+%======================================================
+\section{Mathematical Foundations}
+%======================================================
+
+\subsection{Soft Constraint Formulation (Baseline)}
+
+\begin{mathbox}
+\textbf{Theory:} Soft constraints enter as additive penalty terms in
+the loss function. They are differentiable, computationally cheap,
+and allow gradient-based optimization to trade off constraint
+satisfaction against data fidelity. The penalty weight $\lambda_p$
+controls this trade-off but must be tuned and can never guarantee
+zero violations.
+
+\begin{align}
+\mathcal{L}_{\text{total}} &= \mathcal{L}_{\text{data}}
+  + \lambda_p\,\mathcal{L}_{\text{physics}} \\[4pt]
+\mathcal{L}_{\text{data}} &= \mathbb{E}\!\left[
+  \frac{(q - \hat{q})^2}{2\hat{\sigma}^2}
+  + \tfrac{1}{2}\log\hat{\sigma}^2\right]
+  \quad\text{(heteroscedastic NLL)} \\[4pt]
+\mathcal{L}_{\text{physics}} &= \mathcal{L}_{\text{Sips}}
+  + \mathcal{L}_{\text{bounds}}
+  + \mathcal{L}_{\text{mono}}
+  + \mathcal{L}_{\text{vH}} \\[4pt]
+\mathcal{L}_{\text{Sips}} &= \mathrm{MSE}\!\left(\hat{q},\;
+  \frac{\hat{q}_{\max}(\hat{K}P)^{\hat{n}}}{1+(\hat{K}P)^{\hat{n}}}
+  \right) \\[4pt]
+\mathcal{L}_{\text{bounds}} &= \mathrm{ReLU}(-\hat{q})
+  + \mathrm{ReLU}(\hat{q} - \hat{q}_{\max}) \\[4pt]
+\mathcal{L}_{\text{mono}} &= \frac{1}{|\mathcal{B}|}
+  \sum_{i\in\mathcal{B}} \mathrm{ReLU}\!\left(
+  -\frac{\partial\hat{q}}{\partial P}\bigg|_T\right) \\[4pt]
+\mathcal{L}_{\text{vH}} &= \mathrm{MSE}\!\left(
+  \frac{\partial\ln\hat{K}}{\partial(1/T)},\;
+  -\frac{\Delta\hat{H}}{R}\right)
+\end{align}
+\textbf{Fundamental limitation:} $\lambda_p \to \infty$ theoretically
+eliminates violations but destabilizes optimization.
+In practice, violations persist at any finite $\lambda_p$.
+\end{mathbox}
+
+\subsection{Hard Constraint Strategy 1: Constrained Output Activations (Bounds)}
+
+\begin{changebox}
+\textbf{v3 correction:} The v2 formulation used $\sigma(z_s)\cdot\mathrm{softplus}(z_q)\cdot\hat{q}_{\max}$, which does not guarantee an upper bound because $\mathrm{softplus}(z_q)$ is unbounded. The formulation below is corrected: a single sigmoid output guarantees $\hat{q}\in(0,\hat{q}_{\max})$ with no additional factors needed.
+\end{changebox}
+
+\begin{mathbox}
+\textbf{Theory:} Non-negativity and saturation bounds are enforced by
+replacing the unbounded prediction head with a single sigmoid activation
+that maps $\mathbb{R} \to (0, 1)$, scaled by a positive $\hat{q}_{\max}$.
+Since $\sigma(z)\in(0,1)$ for all $z\in\mathbb{R}$, the product
+$\sigma(z_q)\cdot\hat{q}_{\max}$ is strictly in $(0,\hat{q}_{\max})$
+by construction, for any finite network output $z_q$.
+
+\begin{align}
+\hat{q}_{\max} &= \mathrm{softplus}\!\left(\mathrm{NN}_{q_{\max}}(\mathbf{x})\right) > 0 \\[4pt]
+\hat{q} &= \hat{q}_{\max} \cdot \sigma(z_q)
+  \;\in\; (0,\,\hat{q}_{\max})
+\end{align}
+where $z_q$ is a raw scalar network output and $\sigma$ is the sigmoid
+function. This is a simpler, safer formulation than any two-factor
+product: a single bounded factor is sufficient to enforce both bounds
+simultaneously.
+
+\textbf{Cost:} Negligible. One sigmoid activation per sample.
+$\mathcal{L}_{\text{bounds}}$ is dropped from the loss.
+\end{mathbox}
+
+\subsection{Hard Constraint Strategy 2: Non-Negative Pressure Pathway (Monotonicity)}
+
+\begin{changebox}
+\textbf{v3 correction:} The v2 formulation used a Partially Input-Convex
+Neural Network (PICNN), claiming that convexity in $P$ implies
+$\partial\hat{q}/\partial P \geq 0$. This is incorrect: convexity implies
+the derivative is \emph{non-decreasing}, not necessarily non-negative.
+A convex function can still decrease. The formulation below replaces PICNN
+with a non-negative pressure pathway architecture, which directly and
+provably guarantees $\partial\hat{q}/\partial P \geq 0$.
+Additionally, Swish activations on the pressure pathway are replaced by
+softplus (monotone everywhere); Swish has a non-monotone region near
+$x \approx -1.3$ that can break the monotonicity guarantee.
+\end{changebox}
+
+\begin{mathbox}
+\textbf{Theory:} A sufficient condition for $\partial\hat{q}/\partial P \geq 0$
+is that every pathway through which $P$ contributes to $\hat{q}$
+uses (a) non-negative weights and (b) monotone increasing activations.
+Under these two conditions, increasing $P$ cannot decrease $\hat{q}$,
+regardless of the network depth.
+
+For a single pressure-pathway layer:
+\begin{align}
+\hat{q}(P, \mathbf{x}_c) &= a(\mathbf{x}_c)
+  + \mathrm{softplus}(w \cdot P + g(\mathbf{x}_c)) \\[4pt]
+\frac{\partial\hat{q}}{\partial P} &= w \cdot \sigma(wP + g(\mathbf{x}_c)) \geq 0
+  \quad\text{iff } w \geq 0
+\end{align}
+Since $\sigma(\cdot) > 0$ always, the sign of $\partial\hat{q}/\partial P$
+is determined entirely by the sign of $w$. Non-negativity is enforced via
+reparameterization during every forward pass:
+\begin{align}
+w &= \mathrm{softplus}(w_{\text{raw}})
+  \quad (w_{\text{raw}} \in \mathbb{R},\; w > 0)
+\end{align}
+
+For a multi-layer pressure pathway with $L$ layers:
+\begin{align}
+z_P^{(0)} &= P \\[2pt]
+z_P^{(\ell+1)} &= \mathrm{softplus}\!\left(
+  \underbrace{W_P^{(\ell)}}_{\geq 0} z_P^{(\ell)}
+  + W_c^{(\ell)} \mathbf{x}_c + b^{(\ell)}\right) \\[4pt]
+\hat{q} &= W_{\text{out}} z_P^{(L)} + a(\mathbf{x}_c)
+\end{align}
+where $W_P^{(\ell)} = \mathrm{softplus}(W_{P,\text{raw}}^{(\ell)}) \geq 0$
+is recomputed at every forward pass.
+
+\textbf{Critical implementation requirement:} Pressure $P$ must enter the
+network \emph{exclusively} through this constrained pathway. If $P$ is
+also passed through any standard (unconstrained) layer, the guarantee is
+lost. The compositional features $\mathbf{x}_c$ may enter freely through
+unconstrained pathways.
+
+\textbf{Activation choice:} softplus or sigmoid only on the pressure
+pathway. Swish is not permitted on this pathway because it is non-monotone
+for $x \lesssim -1.3$, which would break the monotonicity guarantee.
+
+\textbf{Cost:} Moderate. Softplus reparameterization added per layer;
+one additional backward pass for Jacobian verification.
+$\mathcal{L}_{\text{mono}}$ is dropped.
+\end{mathbox}
+
+\subsection{Hard Constraint Strategy 3: Gauge Function Parameterization (Sips)}
+
+\begin{changebox}
+\textbf{v3 note:} The Sips gauge variant simultaneously enforces bounds,
+monotonicity, and Sips functional form, provided $\hat{q}_{\max}, \hat{K},
+\hat{n} > 0$ and raw physical pressure $P > 0$ is used. This makes separate
+hard-bounds (Strategy 1) and hard-monotonicity (Strategy 2) components
+redundant within this variant. The ablation design accounts for this explicitly.
+\end{changebox}
+
+\begin{mathbox}
+\textbf{Theory:} The Sips isotherm shape is enforced by structuring
+the network to predict isotherm \emph{parameters} from coal composition,
+then computing the isotherm analytically. The functional form becomes
+the output layer itself.
+
+\begin{align}
+\hat{q}(\mathbf{x}_c, P) &= \frac{\hat{q}_{\max}(\mathbf{x}_c)
+  \cdot [\hat{K}(\mathbf{x}_c)\cdot P]^{\hat{n}(\mathbf{x}_c)}}
+  {1 + [\hat{K}(\mathbf{x}_c)\cdot P]^{\hat{n}(\mathbf{x}_c)}} \\[6pt]
+\hat{q}_{\max} &= \mathrm{softplus}(\mathrm{NN}_1(\mathbf{x}_c)) > 0 \\[4pt]
+\hat{K} &= \mathrm{softplus}(\mathrm{NN}_2(\mathbf{x}_c)) > 0 \\[4pt]
+\hat{n} &= \mathrm{softplus}(\mathrm{NN}_3(\mathbf{x}_c)) > 0
+\end{align}
+
+\textbf{Structural guarantees (given $P > 0$):}
+\begin{itemize}[noitemsep]
+  \item $\hat{q} > 0$ (positivity): numerator always positive
+  \item $\hat{q} < \hat{q}_{\max}$ (saturation bound): Sips ratio $< 1$
+  \item $\partial\hat{q}/\partial P \geq 0$ (monotonicity): Sips is
+    monotone increasing in $P$ for all positive parameters
+\end{itemize}
+The Sips gauge variant therefore subsumes hard-bounds and hard-monotonicity
+as a special case. Combining it with separate bounds or monotonicity
+enforcement (V7 in v2 design) is architecturally redundant.
+
+\textbf{Implementation requirement:} Raw physical pressure $P > 0$ (in MPa)
+must be used in the Sips layer, not a scaled or log-transformed version.
+Assert $P > 0$ in the data pipeline. Pressure enters \emph{only} at the
+output Sips layer, not into the encoder.
+
+\textbf{Note:} The predicted parameters $[\hat{q}_{\max}, \hat{K}, \hat{n}]$
+are directly physically interpretable and validatable against classical
+isotherm literature. $\mathcal{L}_{\text{Sips}}$ is dropped.
+\end{mathbox}
+
+\subsection{Hard Constraint Strategy 4: Arrhenius Reparameterization (Van't~Hoff)}
+
+\begin{mathbox}
+\textbf{Theory:} Van't~Hoff consistency requires $K(T)$ to follow
+Arrhenius kinetics. Rather than penalizing deviations, the network is
+parameterized to produce $K(T)$ that satisfies it exactly by definition.
+
+\begin{align}
+\hat{K}(T, \mathbf{x}_c) &= \hat{K}_0(\mathbf{x}_c)
+  \cdot \exp\!\left(-\frac{\Delta\hat{H}(\mathbf{x}_c)}{RT}\right)
+\end{align}
+where $\hat{K}_0(\mathbf{x}_c) = \mathrm{softplus}(\mathrm{NN}_{K_0}(\mathbf{x}_c)) > 0$
+and $\Delta\hat{H}(\mathbf{x}_c) = -\mathrm{softplus}(\mathrm{NN}_H(\mathbf{x}_c)) < 0$
+(exothermic adsorption, physically required for physisorption).
+
+By construction, $\partial\ln\hat{K}/\partial(1/T) = -\Delta\hat{H}/R$
+exactly. The predicted $\Delta\hat{H}$ values (in kJ/mol) are physically
+interpretable adsorption enthalpies, validatable against calorimetric
+measurements ($-15$ to $-35$\,kJ/mol for methane-coal).
+$\mathcal{L}_{\text{vH}}$ is dropped.
+\end{mathbox}
+
+\subsection{Constraint Subsumption Map}
+
+\begin{rationalebox}
+A key structural insight emerging from the corrected formulations is that
+the Sips gauge architecture (Strategy 3) subsumes the bounds guarantee
+(Strategy 1) and the pressure-monotonicity guarantee (Strategy 2),
+as long as all Sips parameters are positive and raw $P > 0$ is used.
+This has direct implications for which ablation variants are independent.
+
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Strategy} & \textbf{Bounds} & \textbf{Mono} & \textbf{Sips form} & \textbf{Van't~Hoff} \\
+\midrule
+Strategy 1 (sigmoid head) & \checkmark & --- & --- & --- \\
+Strategy 2 (NN$^+$ pathway) & --- & \checkmark & --- & --- \\
+Strategy 3 (Sips gauge) & \checkmark & \checkmark & \checkmark & --- \\
+Strategy 4 (Arrhenius) & --- & --- & --- & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Strategies 3 and 4 together (Sips gauge + Arrhenius) enforce all four
+physical constraints and form the all-hard variant~V2.
+\end{rationalebox}
+
+\subsection{Revised Factorial Ablation Design}
+
+\begin{changebox}
+\textbf{v3 revision:} The ablation design is revised to correct two issues
+from v2: (a) the old V8 (Hard-\{S+B+M\}) was redundant because the Sips
+gauge already enforces bounds and monotonicity; (b) the Sips$\times$vH
+interaction was confounded in the old V2/V8 because bounds and monotonicity
+were simultaneously hard. The new V8 (Hard-\{S+vH\}) enables a clean
+Sips$\times$vH interaction test using \{V1, V5, V6, V8\}, analogous to
+the clean Bounds$\times$Monotonicity test using \{V1, V3, V4, V7\}.
+\end{changebox}
+
+\begin{mathbox}
+\textbf{Design:} Eight scientifically motivated variants preserving all
+main effects and the two primary interaction subspaces:
+
+\begin{center}
+\small
+\begin{tabular}{llccccl}
+\toprule
+\textbf{ID} & \textbf{Variant} & \textbf{Bounds} & \textbf{Mono} &
+  \textbf{Sips} & \textbf{vH} & \textbf{Purpose} \\
+\midrule
+V1 & All-soft      & S & S & S & S & Baseline \\
+V2 & All-hard      & H$^*$ & H$^*$ & H & H & Maximum enforcement \\
+V3 & Hard-B        & H & S & S & S & Isolate bounds \\
+V4 & Hard-M        & S & H & S & S & Isolate monotonicity \\
+V5 & Hard-S        & H$^*$ & H$^*$ & H & S & Isolate Sips (subsumes B+M) \\
+V6 & Hard-vH       & S & S & S & H & Isolate thermal \\
+V7 & Hard-\{B+M\}  & H & H & S & S & Joint bounds+mono; B$\times$M interaction \\
+V8 & Hard-\{S+vH\} & H$^*$ & H$^*$ & H & H & Sips+thermal; S$\times$vH interaction \\
+\bottomrule
+\multicolumn{7}{l}{\small $^*$ Enforced implicitly by the Sips gauge architecture.}\\
+\multicolumn{7}{l}{\small H = hard, S = soft.}\\
+\end{tabular}
+\end{center}
+
+\textbf{Interaction tests enabled:}
+\begin{itemize}[noitemsep]
+  \item Bounds $\times$ Monotonicity: \{V1, V3, V4, V7\} --- clean $2\times2$
+  \item Sips $\times$ Van't~Hoff: \{V1, V5, V6, V8\} --- clean $2\times2$
+\end{itemize}
+
+\textbf{Note on V5:} Because the Sips gauge subsumes bounds and
+monotonicity, V5 is not a pure single-constraint isolate. This should
+be explicitly acknowledged in the manuscript. V5 tests the effect of
+the Sips gauge architecture as a whole (which includes implicit B+M
+enforcement), not the Sips functional form constraint in isolation.
+This is an inherent consequence of the architectural approach, not a
+design flaw, and is scientifically informative in its own right.
+\end{mathbox}
+
+%======================================================
+\section{Implementation Pipeline}
+%======================================================
+
+\begin{rationalebox}
+\textbf{Pipeline design principle:} The evaluation harness is built
+\emph{before} any model, not after. Every model variant plugs into
+the same harness automatically. This prevents retrofitting, ensures
+fair comparison, and eliminates the risk of adapting evaluation
+procedures to favour certain results.
+\end{rationalebox}
+
+\subsection*{Pipeline Overview}
+
+\begin{center}
+\small
+\begin{tabular}{clll}
+\toprule
+\textbf{Step} & \textbf{Component} & \textbf{Produces} & \textbf{Used by} \\
+\midrule
+1 & Data pipeline + 3-tier splits & Loaders, scalers & All steps \\
+2 & Evaluation harness & Stats framework & Steps 4--10 \\
+3 & Soft baseline + $\lambda_p$ sweep & V1 + sensitivity & Manuscript \S3.1 \\
+4 & Hard bounds (V3) & Architecture A & Harness \\
+5 & Hard monotonicity (V4) & Architecture B & Harness \\
+6 & Hard Sips --- gauge (V5) & Architecture C & Harness \\
+7 & Hard vH --- Arrhenius (V6) & Architecture D & Harness \\
+8 & Joint variants V2, V7, V8 & Final 3 variants & Harness \\
+9 & Full ablation + interaction & All 8 variants & Manuscript \S3.2--3.5 \\
+10 & UQ calibration & Calibrated models & Manuscript \S3.6 \\
+11 & Interpretability & SHAP + param plots & Manuscript \S3.7 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================
+\section{Step-by-Step Implementation}
+%======================================================
+
+\subsection{Step 1: Data Pipeline with Three-Tier Evaluation}
+
+\begin{rationalebox}
+\textbf{Rationale:} Extrapolation performance under distribution shift
+is the primary scientific argument for hard constraints. Three evaluation
+tiers must be defined from the start so every model is evaluated
+identically. GroupKFold at the experiment level prevents sample-level
+leakage across all splits.
+
+\textbf{v3 addition:} An explicit assertion that $P > 0$ for all samples
+is required, since the Sips gauge monotonicity guarantee depends on raw
+positive pressure. Pressure values at or below zero are physically
+meaningless in this context and would produce NaN gradients in
+$(\hat{K} P)^{\hat{n}}$.
+\end{rationalebox}
+
+\begin{stepbox}
+\textbf{What it achieves:}
+\begin{itemize}[noitemsep]
+  \item Experiment-level GroupShuffleSplit (no leakage)
+  \item Log target transform + robust scaling (fitted on train only)
+  \item 12-feature engineering (same as original study)
+  \item 5-fold GroupKFold for cross-validation
+  \item Three evaluation tiers: T1 (interpolation), T2 (rank extrap),
+    T3 (pressure extrap)
+  \item Raw pressure tensor preserved (unscaled MPa) for Sips output layer
+  \item Assert $P > 0$ for all samples before training
+\end{itemize}
+\end{stepbox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 1:}
+
+\texttt{Implement a complete data pipeline in PyTorch for methane coal
+sorption modeling.}
+
+\texttt{INPUT CSV columns: experiment\_id, coal\_rank (anthracite/lv-bitu/
+mv-bitu/hv-bitu/lignite), temperature\_K, pressure\_MPa, moisture\_wt,
+ash\_wt, volatile\_wt, CH4\_adsorption\_m3t}
+
+\texttt{SPLITS (implement all, no overlap):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Main split: GroupShuffleSplit 80/20 by experiment\_id,
+    stratify by joint temperature-pressure bin within groups}
+  \item \texttt{T1 (interpolation): standard 20\% held-out test set}
+  \item \texttt{T2 (rank extrapolation): ALL lignite experiments
+    completely withheld from training. If lignite in test set, move
+    to T2. T2 evaluated separately.}
+  \item \texttt{T3 (pressure extrapolation): from T1, isolate samples
+    with P > 8.0 MPa (top 10th percentile). Evaluate models on these
+    without retraining.}
+  \item \texttt{5-fold CV: GroupKFold(n\_splits=5) on training set,
+    group=experiment\_id}
+\end{itemize}
+
+\texttt{FEATURES: engineer Tr=T/190.6, Pr=P/4.60, FC=100-M-A-VM,
+OM=(VM+FC)/100, beta=1/(8.314*T), PT=P*T, MV=moisture*volatile.
+Total: 12 features. Robust scale (median/IQR) fitted on train fold only.}
+
+\texttt{PRESSURE HANDLING (critical for Sips gauge):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Return raw\_pressure tensor (unscaled MPa) alongside
+    scaled feature tensor. The Sips output layer uses raw pressure.}
+  \item \texttt{assert (raw\_pressure > 0).all(), "Sips monotonicity
+    guarantee requires P > 0 for all samples"}
+  \item \texttt{Log minimum pressure in dataset; warn if any P < 0.01 MPa}
+\end{itemize}
+
+\texttt{RETURN: DataLoaders (train/val/T1/T2/T3), scaler object,
+feature\_names list, fold\_indices for CV, raw\_pressure tensor
+(unscaled MPa), experiment\_id tensor.}
+
+\texttt{VERIFICATION: assert zero experiment overlap across splits.
+Assert T2 contains only lignite. Assert T3 subset of T1. Assert P > 0.
+Print split sizes and rank distribution per split.}
+\end{promptbox}
+
+\subsection{Step 2: Unified Evaluation Harness}
+
+\begin{rationalebox}
+\textbf{Rationale:} Building the evaluation harness before any model
+ensures all variants are compared on identical metrics computed
+identically. Statistical rigor (bootstrap CIs, corrected tests) is
+applied from the first result. Physical violation rates with uncertainty
+bounds are treated as first-class results.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 2:}
+
+\texttt{Implement a unified evaluation harness for PINN constraint
+comparison.}
+
+\texttt{FUNCTION: evaluate\_model(model, data\_dict, n\_bootstrap=100,
+n\_mc=100, alpha=0.05)}
+
+\texttt{ACCURACY METRICS (compute on T1, T2, T3 separately):}
+\begin{itemize}[noitemsep]
+  \item \texttt{R2, RMSE, MAE, MaxAE on original scale (back-transform)}
+  \item \texttt{Median relative error (\%), mean relative error (\%)}
+  \item \texttt{95\% bootstrap CI for each metric (stratified by coal rank)}
+\end{itemize}
+
+\texttt{PHYSICAL VIOLATION METRICS (primary):}
+\begin{itemize}[noitemsep]
+  \item \texttt{neg\_rate: fraction samples with q\_hat < 0 (+ 95\% CI)}
+  \item \texttt{sat\_rate: fraction with q\_hat > q\_max (+ 95\% CI)}
+  \item \texttt{nonmono\_rate: fraction with dq/dP < 0 at any P in
+    linspace(0.01, 12, 50) per sample (+ 95\% CI)}
+  \item \texttt{vH\_mae: mean |d(lnK)/d(1/T) + dH/R| (+ 95\% CI)}
+  \item \texttt{For hard constraints: assert 0.0 and raise ValueError
+    if non-zero (structural guarantee must hold)}
+\end{itemize}
+
+\texttt{UQ METRICS (MC Dropout, 100 passes):}
+\begin{itemize}[noitemsep]
+  \item \texttt{sigma\_epi, sigma\_ale, sigma\_total}
+  \item \texttt{ECE (4 confidence levels: 68, 90, 95, 99\%)}
+  \item \texttt{rho\_s: Spearman(|error|, sigma\_total)}
+  \item \texttt{NLL, CRPS, Sharpness (95\% PI width)}
+  \item \texttt{Coverage at 68\%, 90\%, 95\%, 99\%}
+\end{itemize}
+
+\texttt{COMPUTATIONAL METRICS:}
+\begin{itemize}[noitemsep]
+  \item \texttt{train\_time\_sec, inference\_time\_ms\_per\_sample}
+  \item \texttt{n\_parameters, memory\_MB (peak GPU)}
+  \item \texttt{epochs\_to\_R2\_085, epochs\_to\_R2\_090}
+\end{itemize}
+
+\texttt{STATISTICAL COMPARISON FUNCTIONS:}
+\begin{itemize}[noitemsep]
+  \item \texttt{compare\_variants(v1, v2, metric): bootstrap paired
+    t-test + Cohen's d + p-value}
+  \item \texttt{bonferroni\_correct(p\_values, n=28): corrected alpha
+    = 0.05/28 = 0.0018}
+  \item \texttt{anova\_2x2(results, factor1, factor2, metric)}
+  \item \texttt{mcnemar\_test(violations\_v1, violations\_v2)}
+\end{itemize}
+
+\texttt{OUTPUT: dict with all metrics + CIs, auto-generate LaTeX table.
+Log everything to CSV for reproducibility.}
+\end{promptbox}
+
+\subsection{Step 3: Soft Baseline + $\lambda_p$ Sensitivity Analysis}
+
+\begin{rationalebox}
+\textbf{Rationale:} Before declaring hard constraints superior, we must
+rule out that soft baseline underperforms simply due to poor $\lambda_p$
+tuning. The sensitivity sweep is mandatory to make the hard vs.\ soft
+comparison credible.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 3:}
+
+\texttt{Implement the soft-constraint PINN baseline (V1) and lambda\_p
+sensitivity sweep.}
+
+\texttt{ARCHITECTURE (V1 baseline):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Input: 12 features (including scaled pressure)}
+  \item \texttt{5 residual blocks [512,1024,512,256,128],
+    LayerNorm (NOT BatchNorm), Swish activations, dropout=0.1}
+  \item \texttt{3 output heads: mean (softplus for positivity --- soft),
+    log-variance (aleatoric), physics params [q\_max,K,n] via softplus}
+  \item \texttt{All 4 physics losses active as soft penalties}
+\end{itemize}
+
+\texttt{LAMBDA\_P SENSITIVITY SWEEP:}
+\begin{itemize}[noitemsep]
+  \item \texttt{Train V1 with lambda\_p in [0.0, 0.01, 0.05, 0.1,
+    0.2, 0.5, 1.0, 2.0]}
+  \item \texttt{For each: 3 seeds, 5-fold CV}
+  \item \texttt{Record: R2, RMSE, violation rates, ECE}
+  \item \texttt{Select lambda\_p* = argmin validation RMSE}
+  \item \texttt{Plot: dual-axis RMSE vs lambda\_p and violation rate
+    vs lambda\_p (Pareto trade-off)}
+  \item \texttt{KEY RESULT: is there a lambda\_p achieving zero
+    violations AND high R2? (Expected: no)}
+\end{itemize}
+
+\texttt{TRAINING: AdamW, lr=1e-3, wd=1e-5, early stopping patience=100,
+max\_epochs=1000. Log per epoch: loss, R2\_val, violation\_rates.}
+
+\texttt{Plug into harness. Store in results\_dict['V1'].}
+\end{promptbox}
+
+\subsection{Step 4: Hard Bounds Variant (V3)}
+
+\begin{rationalebox}
+\textbf{Rationale:} Physical bounds are the simplest constraint to
+enforce exactly and have the smallest computational overhead. Even this
+trivial hard constraint establishing measurable benefit over soft
+enforcement anchors the argument for the full study.
+\end{rationalebox}
+
+\begin{stepbox}
+\textbf{What it achieves:} V3 (Hard-B) with corrected sigmoid-only output
+head that structurally maps to $(0, \hat{q}_{\max})$.
+$\mathcal{L}_{\text{bounds}}$ removed; all other losses unchanged.
+\end{stepbox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 4:}
+
+\texttt{Implement V3 (Hard-B): soft baseline with hard physical bounds.
+Modify ONLY the mean prediction head from V1:}
+
+\texttt{class HardBoundsHead(nn.Module):}
+\begin{itemize}[noitemsep]
+  \item \texttt{head\_qmax: Linear -> softplus -> q\_max > 0}
+  \item \texttt{head\_q: Linear -> raw scalar z\_q}
+  \item \texttt{forward(h):}
+  \begin{itemize}[noitemsep]
+    \item \texttt{q\_max = softplus(head\_qmax(h))}
+    \item \texttt{z\_q = head\_q(h)}
+    \item \texttt{q\_hat = q\_max * torch.sigmoid(z\_q)}
+    \item \texttt{\# q\_hat is strictly in (0, q\_max) for all finite z\_q}
+    \item \texttt{return q\_hat, q\_max}
+  \end{itemize}
+\end{itemize}
+
+\texttt{VERIFICATION:}
+\begin{itemize}[noitemsep]
+  \item \texttt{verify\_bounds(model, loader): assert (q\_hat > 0).all()
+    and (q\_hat < q\_max).all()}
+  \item \texttt{Run on 1000 random inputs including extreme P values}
+  \item \texttt{Raise ValueError with violation details if assertion fails}
+\end{itemize}
+
+\texttt{Remove L\_bounds. Keep L\_Sips + L\_mono + L\_vH soft.
+Plug into harness. Store in results\_dict['V3'].}
+\end{promptbox}
+
+\subsection{Step 5: Hard Monotonicity via Non-Negative Pressure Pathway (V4)}
+
+\begin{rationalebox}
+\textbf{Rationale:} Monotonic pressure-adsorption is a thermodynamic
+law (Le~Chatelier). Violations are not just statistically undesirable
+--- they are physically impossible. Soft constraints can produce
+non-monotonic isotherms for rare compositional inputs at high pressure,
+exactly the extrapolation scenario most relevant for reservoir assessment.
+
+The corrected architecture directly guarantees $\partial\hat{q}/\partial P \geq 0$
+through non-negative weights and monotone activations on the pressure
+pathway, without relying on convexity arguments.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 5:}
+
+\texttt{Implement V4 (Hard-M): non-negative pressure pathway for hard
+monotonicity enforcement.}
+
+\texttt{ARCHITECTURE:}
+\begin{itemize}[noitemsep]
+  \item \texttt{Compositional encoder: standard 5 residual blocks
+    [512,1024,512,256,128] with Swish. Input: 11 compositional features
+    (no pressure). Output: h\_comp (128-dim)}
+  \item \texttt{Pressure pathway: separate 3-layer network with
+    hidden dims [64, 32, 16]. CRITICAL:}
+  \begin{itemize}[noitemsep]
+    \item \texttt{All weight matrices on pressure-input connections
+      reparameterized: W = F.softplus(W\_raw) >= 0}
+    \item \texttt{Activations: softplus ONLY (not Swish, not ReLU).
+      Swish is non-monotone and breaks the guarantee.}
+    \item \texttt{Pressure P enters ONLY this pathway, nowhere else.}
+  \end{itemize}
+  \item \texttt{Output: q\_hat = linear(concat(h\_comp, h\_pressure))}
+\end{itemize}
+
+\texttt{REPARAMETERIZATION (critical --- must be in forward pass):}
+\begin{itemize}[noitemsep]
+  \item \texttt{def forward(self, x\_comp, P\_raw):}
+  \item \texttt{W\_eff = F.softplus(self.W\_raw) \# recompute each pass}
+  \item \texttt{h\_P = softplus(W\_eff @ P\_raw + self.b)}
+  \item \texttt{Do NOT store softplus(W\_raw) as a parameter.}
+\end{itemize}
+
+\texttt{VERIFICATION:}
+\begin{itemize}[noitemsep]
+  \item \texttt{verify\_monotonicity(model, n\_comp=500, n\_P=50):}
+  \item \texttt{Sample 500 random coal compositions from training dist}
+  \item \texttt{Sweep P in linspace(0.01, 15, 50)}
+  \item \texttt{dq\_dP = torch.autograd.grad(q\_hat.sum(), P\_raw)[0]}
+  \item \texttt{assert (dq\_dP >= -1e-6).all()}
+  \item \texttt{Report: max violation magnitude, fraction negative}
+\end{itemize}
+
+\texttt{Remove L\_mono. Keep L\_Sips + L\_bounds + L\_vH soft.
+Plug into harness. Store in results\_dict['V4'].}
+\end{promptbox}
+
+\subsection{Step 6: Gauge Function Sips Architecture (V5)}
+
+\begin{rationalebox}
+\textbf{Rationale:} The Sips gauge variant enforces the functional form
+of the pressure-adsorption relationship and, as a structural consequence,
+also guarantees bounds and monotonicity. The encoder predicts physically
+interpretable parameters $[\hat{q}_{\max}, \hat{K}, \hat{n}]$ from
+composition alone, enabling external validation against classical isotherm
+literature and SHAP attribution per parameter.
+
+The manuscript should explicitly acknowledge that V5 is not a single-constraint
+isolate but a composite architectural choice. The scientific value of V5
+is both in testing the Sips functional form constraint and in demonstrating
+the interpretability bonus of the gauge approach.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 6:}
+
+\texttt{Implement V5 (Hard-S): gauge function Sips PINN.}
+
+\texttt{class SipsGaugePINN(nn.Module):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Shared encoder: 5 residual blocks [512,1024,512,256,128],
+    input=11 compositional features (NO pressure in encoder)}
+  \item \texttt{head\_qmax: Linear(128,1) -> softplus -> q\_max > 0}
+  \item \texttt{head\_K: Linear(128,1) -> softplus -> K > 0}
+  \item \texttt{head\_n: Linear(128,1) -> softplus -> n > 0}
+  \item \texttt{head\_logvar: Linear(128,1) -> log\_sigma2}
+  \item \texttt{forward(x\_comp, P\_raw):}
+  \begin{itemize}[noitemsep]
+    \item \texttt{assert (P\_raw > 0).all(), "Sips requires P > 0"}
+    \item \texttt{h = encoder(x\_comp)}
+    \item \texttt{q\_max, K, n = heads(h)}
+    \item \texttt{KP\_n = (K * P\_raw).pow(n)}
+    \item \texttt{q\_hat = q\_max * KP\_n / (1 + KP\_n)}
+    \item \texttt{return q\_hat, log\_sigma2, q\_max, K, n}
+  \end{itemize}
+\end{itemize}
+
+\texttt{STRUCTURAL VERIFICATION:}
+\begin{itemize}[noitemsep]
+  \item \texttt{Assert q\_hat > 0 and q\_hat < q\_max for all samples}
+  \item \texttt{Assert dq/dP >= 0 for linspace(0.01, 15, 50)}
+  \item \texttt{These should hold by construction; any violation
+    indicates a bug (not a model limitation)}
+\end{itemize}
+
+\texttt{PARAMETER ANALYSIS:}
+\begin{itemize}[noitemsep]
+  \item \texttt{Compute mean q\_max, K, n per coal rank}
+  \item \texttt{Assert q\_max in [10,40] m3/t, K in [0.1,5] MPa-1,
+    n in [0.3,2.0]}
+  \item \texttt{SHAP on each parameter head separately}
+\end{itemize}
+
+\texttt{Remove L\_Sips, L\_bounds, L\_mono (all subsumed).
+Keep L\_vH soft. Plug into harness. Store in results\_dict['V5'].}
+\end{promptbox}
+
+\subsection{Step 7: Arrhenius Reparameterization (V6)}
+
+\begin{rationalebox}
+\textbf{Rationale:} Van't~Hoff consistency governs temperature dependence
+--- critical for predictions at temperatures outside the narrow 20--50$^\circ$C
+training range. The Arrhenius reparameterization produces interpretable
+$\Delta\hat{H}$ values validatable against calorimetric literature.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 7:}
+
+\texttt{Implement V6 (Hard-vH): Arrhenius K(T) reparameterization.
+Modify the physics parameter head from V1:}
+
+\texttt{class ArrheniusHead(nn.Module):}
+\begin{itemize}[noitemsep]
+  \item \texttt{head\_K0: Linear(128,1) -> softplus -> K0 > 0}
+  \item \texttt{head\_dH: Linear(128,1) -> -softplus(x) -> dH < 0
+    (exothermic)}
+  \item \texttt{forward(h, T\_raw):}
+    \texttt{K = K0 * torch.exp(dH / (8.314 * T\_raw))}
+    \texttt{(note: dH < 0, so exponent is negative as required)}
+  \item \texttt{Return K, K0, dH (convert to kJ/mol for display)}
+\end{itemize}
+
+\texttt{VERIFICATION:}
+\begin{itemize}[noitemsep]
+  \item \texttt{Compute d(lnK)/d(1/T) numerically for 100 samples}
+  \item \texttt{Assert max|d(lnK)/d(1/T) + dH/R| < 1e-4}
+  \item \texttt{Report dH distribution per coal rank in kJ/mol}
+  \item \texttt{Assert 95\% of dH in [-60, -5] kJ/mol}
+\end{itemize}
+
+\texttt{Compare dH to Busch \& Gensterblum (2011):
+anthracite ~-22, bituminous ~-18, lignite ~-14 kJ/mol.
+Plug into harness. Store in results\_dict['V6'].}
+\end{promptbox}
+
+\subsection{Step 8: Joint Variants V2, V7, V8}
+
+\begin{rationalebox}
+\textbf{Rationale:} Joint variants test whether hard constraints combine
+additively or otherwise. V7 (Hard-\{B+M\}) is the most practically
+relevant: zero-violation guarantee on the two most commonly violated
+constraints at minimal cost. V8 (Hard-\{S+vH\}) enables the clean
+Sips$\times$vH interaction test. V2 (all-hard) tests whether maximum
+enforcement hurts accuracy.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 8:}
+
+\texttt{V7 (Hard-B+M): combine HardBoundsHead (Step 4) with non-negative
+pressure pathway (Step 5). Drop L\_bounds and L\_mono.}
+
+\texttt{V8 (Hard-S+vH): SipsGaugePINN (Step 6) with ArrheniusHead
+(Step 7). All four physical losses dropped. L\_data only.
+Note: Sips gauge already enforces bounds and mono implicitly.}
+
+\texttt{V2 (All-hard): identical to V8. Sips + Arrhenius together
+enforce all four constraints. L\_data only.}
+
+\texttt{For each variant: run all structural verification functions.
+If V2 shows degraded accuracy vs V1, report this honestly.
+Store in results\_dict.}
+
+\texttt{NOTE: V2 and V8 are equivalent under this ablation design.
+Run as one variant. Report in the manuscript that the all-hard model
+is achieved by combining Sips gauge + Arrhenius, which is also V8.}
+\end{promptbox}
+
+\subsection{Step 9: Full Ablation + Interaction Analysis}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 9:}
+
+\texttt{MAIN EFFECTS TABLE: for all 8 variants on T1, T2, T3:}
+\begin{itemize}[noitemsep]
+  \item \texttt{R2 (mean +/- 95\% CI), RMSE, MAE, MaxAE}
+  \item \texttt{violation rates with CIs (hard variants must show 0.0)}
+  \item \texttt{ECE, rho\_s, NLL, train time, parameters, memory}
+\end{itemize}
+
+\texttt{PAIRWISE STATISTICAL TESTS (28 pairs):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Bootstrap paired t-test on RMSE (100 bootstrap samples)}
+  \item \texttt{Bonferroni correction: alpha = 0.05/28 = 0.0018}
+  \item \texttt{Cohen's d for effect size}
+  \item \texttt{McNemar's test for violation rate proportions}
+  \item \texttt{Report as significance matrix (heatmap)}
+\end{itemize}
+
+\texttt{ANOVA INTERACTION ANALYSIS:}
+\begin{itemize}[noitemsep]
+  \item \texttt{Bounds x Mono: use V1(S,S), V3(H,S), V4(S,H), V7(H,H)}
+  \item \texttt{Sips x vH: use V1(S,S), V5(H,S), V6(S,H), V8(H,H)}
+  \item \texttt{Interaction delta: (V7-V1) - (V3-V1) - (V4-V1)
+    and (V8-V1) - (V5-V1) - (V6-V1)}
+  \item \texttt{delta > 0: superadditive; delta < 0: antagonistic}
+\end{itemize}
+
+\texttt{EXTRAPOLATION ADVANTAGE:}
+\begin{itemize}[noitemsep]
+  \item \texttt{R2 retention ratio: R2\_T2/R2\_T1 and R2\_T3/R2\_T1
+    per variant}
+  \item \texttt{Plot: retention ratio vs violation rate (expected
+    negative correlation)}
+\end{itemize}
+\end{promptbox}
+
+\subsection{Step 10: Calibrated UQ Across All Variants}
+
+\begin{rationalebox}
+\textbf{Rationale:} A key hypothesis is that hard constraints, by narrowing
+the admissible solution space, produce lower epistemic uncertainty. If
+confirmed, this provides a mechanistic explanation for ensemble collapse
+observed in the original paper, connecting the two studies theoretically.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 10:}
+
+\texttt{For each variant (100 MC Dropout passes):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Compute epistemic\_fraction\% per variant}
+  \item \texttt{Fit tau via ECE minimization on validation set}
+  \item \texttt{Evaluate calibrated ECE, rho\_s, NLL, CRPS on T1, T2, T3}
+\end{itemize}
+
+\texttt{KEY PLOT: epistemic\_fraction vs constraint\_hardness\_score
+(score = number of hard constraints active, 0--4).
+Expected: monotone decreasing relationship.}
+
+\texttt{CALIBRATION UNDER EXTRAPOLATION:}
+\begin{itemize}[noitemsep]
+  \item \texttt{ECE on T1 and T2 separately per variant}
+  \item \texttt{Report ECE\_T2/ECE\_T1 ratio (hard constraints expected
+    to maintain better calibration under shift)}
+\end{itemize}
+\end{promptbox}
+
+\subsection{Step 11: Interpretability and Physical Parameter Validation}
+
+\begin{rationalebox}
+\textbf{Rationale:} The gauge function variant (V5) produces parameters
+validatable against external literature --- impossible for standard PINNs.
+SHAP per parameter head reveals what compositional features control
+maximum capacity, equilibrium constant, and heterogeneity. This is new
+scientific knowledge about coal sorption, not just model evaluation.
+\end{rationalebox}
+
+\begin{promptbox}
+\textbf{Requirements --- Step 11:}
+
+\texttt{GAUGE FUNCTION PARAMETER ANALYSIS (V5):}
+\begin{itemize}[noitemsep]
+  \item \texttt{q\_max, K, n distributions per coal rank (violin plots)}
+  \item \texttt{Assert Pearson corr(q\_max, volatile) < -0.3}
+  \item \texttt{SHAP on head\_qmax, head\_K, head\_n separately}
+  \item \texttt{Compare to classical Langmuir fits from Step 3}
+\end{itemize}
+
+\texttt{ARRHENIUS dH VALIDATION (V6):}
+\begin{itemize}[noitemsep]
+  \item \texttt{dH mean +/- std per coal rank in kJ/mol}
+  \item \texttt{Compare to Busch \& Gensterblum (2011)}
+  \item \texttt{One-way ANOVA + Tukey HSD across ranks}
+\end{itemize}
+
+\texttt{GLOBAL SHAP COMPARISON (V1 vs V5):}
+\begin{itemize}[noitemsep]
+  \item \texttt{Mean |SHAP| feature importance ranking for both}
+  \item \texttt{Rank correlation between V1 and V5 importance}
+\end{itemize}
+\end{promptbox}
+
+%======================================================
+\section{Key Connections Between Steps}
+%======================================================
+
+\begin{center}
+\small
+\begin{tabular}{p{3cm}p{4cm}p{4.5cm}}
+\toprule
+\textbf{Step produces} & \textbf{Used in} & \textbf{How} \\
+\midrule
+Step 1: T1/T2/T3 splits & All steps & Identical evaluation on all tiers \\
+Step 1: raw\_pressure & Steps 6,7,8 & Required by Sips gauge output layer \\
+Step 2: Harness & Steps 3--11 & evaluate\_model() for every variant \\
+Step 3: $\lambda_p^*$ & Steps 4--8 & All soft components use optimal $\lambda_p^*$ \\
+Step 3: V1 results & Step 9 & Baseline for all pairwise comparisons \\
+Step 5: NN$^+$ pathway & Step 8 (V7) & Reused in joint variant \\
+Step 6: Gauge code & Step 8 (V2/V8) & Reused in joint variants \\
+Step 7: Arrhenius & Step 8 (V2/V8) & Combined with gauge for all-hard \\
+Step 9: Ablation & Manuscript \S3.2--3.5 & Main results section \\
+Step 10: UQ & Manuscript \S3.6 & Connects to original paper's ensemble finding \\
+Step 11: Interp & Manuscript \S3.7 & New scientific knowledge contribution \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================
+\section{What to Remember and Avoid}
+%======================================================
+
+\begin{warningbox}
+\textbf{Critical design decisions to remember throughout:}
+\begin{enumerate}[noitemsep]
+  \item \textbf{LayerNorm everywhere, not BatchNorm.} Hard constraint
+    variants with small batches may expose BatchNorm instability.
+    LayerNorm is batch-size independent.
+
+  \item \textbf{Softplus reparameterization in forward pass, not stored.}
+    Non-negative weights for the pressure pathway must be recomputed
+    at each forward pass via \texttt{F.softplus(W\_raw)}.
+    Do not store \texttt{softplus(W)} as a parameter.
+
+  \item \textbf{Softplus or sigmoid only on the pressure pathway.}
+    Swish activations are globally used in compositional encoders but
+    must not be used on the pressure pathway in V4/V7, as Swish is
+    non-monotone near $x \approx -1.3$. Use softplus on all
+    pressure-dependent connections.
+
+  \item \textbf{Pressure must not enter any unconstrained pathway (V4, V7).}
+    If pressure $P$ is passed through any standard linear layer with
+    unrestricted weights, the monotonicity guarantee is lost entirely.
+    Verify at implementation time that the only pathway from $P$ to the
+    output is the reparameterized non-negative pathway.
+
+  \item \textbf{Assert $P > 0$ before every Sips gauge computation.}
+    The Sips monotonicity guarantee requires physical pressure to be
+    strictly positive. NaN gradients will occur at $P = 0$.
+
+  \item \textbf{V5 is not a single-constraint isolate.} The Sips gauge
+    enforces bounds and monotonicity implicitly. Acknowledge this explicitly
+    in the manuscript when interpreting V5's main effect. This is not a
+    weakness --- it is the architectural consequence of choosing a
+    physically structured output layer.
+
+  \item \textbf{Identical seeds and hyperparameters across variants.}
+    Any difference in initialization or training hyperparameters
+    confounds the comparison. Only the constraint enforcement strategy
+    changes between variants.
+
+  \item \textbf{Report negative results honestly.} If all-hard (V2)
+    underperforms all-soft (V1) on interpolation accuracy, this is a
+    publishable finding. The paper's value is the rigorous comparison.
+
+  \item \textbf{Bonferroni correction is mandatory.} With 28 pairwise
+    comparisons, uncorrected $p$-values at $\alpha=0.05$ produce
+    approximately 1.4 false positives by chance. Corrected $\alpha=0.0018$.
+
+  \item \textbf{Extrapolation results are the primary contribution.}
+    If hard and soft constraints perform similarly on interpolation
+    but hard constraints dominate on T2/T3, the abstract and conclusions
+    lead with this finding.
+\end{enumerate}
+\end{warningbox}
+
+%======================================================
+\section{Project Report Structure}
+%======================================================
+
+\subsection{Tentative Title}
+
+``Guaranteeing Physical Validity by Construction: A Systematic
+Factorial Evaluation of Hard vs.\ Soft Thermodynamic Constraint
+Enforcement in Physics-Informed Neural Networks for Sorption Studies''
+
+\subsection{Report Structure}
+
+\begin{enumerate}[label=\textbf{\arabic*.}]
+
+\item \textbf{Introduction}
+\begin{itemize}
+  \item Physical validity in safety-critical ML: why violations matter
+  \item Soft constraint limitations: tuning-dependent, violation-tolerant,
+    extrapolation-fragile
+  \item Hard constraint PINNs: state-of-art in PDEs, gap in sorption
+  \item Three architectural strategies and their subsumption relationships
+  \item Three research questions and six contributions
+\end{itemize}
+
+\item \textbf{Materials and Methods}
+\begin{itemize}
+  \item Dataset: 993 measurements, 114 experiments (reference original)
+  \item Three-tier evaluation framework (T1/T2/T3) with rationale
+  \item Soft constraint PINN baseline: architecture + $\lambda_p$ formulation
+  \item Hard bound enforcement: sigmoid-bounded output activation
+  \item Hard monotonicity: non-negative pressure pathway with monotone activations
+  \item Hard Sips: gauge function parameterization; subsumption of bounds and mono
+  \item Hard van't~Hoff: Arrhenius structural reparameterization
+  \item Revised factorial ablation: 8 variants, two clean $2\times2$ interaction subspaces
+  \item Unified evaluation harness: all metrics, bootstrap CIs, McNemar, ANOVA
+  \item UQ: MC Dropout + temperature scaling for all variants
+  \item Interpretability: SHAP per parameter head, ALE, physical validation
+\end{itemize}
+
+\item \textbf{Results and Discussion}
+\begin{itemize}
+  \item \textbf{3.1} $\lambda_p$ sensitivity: soft constraint performance
+    ceiling with optimal tuning
+  \item \textbf{3.2} Main effects: interpolation comparison (T1), 8 variants
+  \item \textbf{3.3} Physical violation rates: hard constraints achieve
+    zero; statistical comparison
+  \item \textbf{3.4} Extrapolation analysis (T2, T3): hard constraint
+    advantage under distribution shift
+  \item \textbf{3.5} Constraint interaction effects: ANOVA results on
+    two clean $2\times2$ subspaces; superadditive/antagonistic findings
+  \item \textbf{3.6} Uncertainty calibration: epistemic fraction vs.\
+    constraint hardness; calibration under extrapolation
+  \item \textbf{3.7} Interpretability: gauge parameter distributions,
+    $\Delta\hat{H}$ validation, SHAP per parameter head
+  \item \textbf{3.8} Computational cost analysis: Pareto frontier
+    (accuracy / violation rate / training time)
+  \item \textbf{3.9} Negative results and limitations (honest reporting)
+\end{itemize}
+
+\item \textbf{Conclusions}
+
+\item \textbf{Repository} [Closed initially; structured with scripts,
+run-files, reports, checkpoints, figures, and metrics, with a readme.
+To be considered for open access after review.]
+
+\end{enumerate}
+
+\end{document}
