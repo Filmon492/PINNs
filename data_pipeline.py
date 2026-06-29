@@ -1,7 +1,10 @@
 import numpy as np 
 from pathlib import Path
+import warnings
+
 import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import RobustScaler
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -49,6 +52,16 @@ def validate_data(df: pd.DataFrame)-> pd.DataFrame:
     # pressure should be positive for Sips model
     if not (df["pressure_MPa"] > 0).all():
         raise ValueError("Sips model requires pressure_MPa > 0 for all samples.")
+
+    min_pressure = float(df["pressure_MPa"].min())
+    print(f"Minimum pressure: {min_pressure:.7f} MPa")
+
+    if min_pressure < 0.01:
+        warnings.warn(
+            f"Minimum pressure is {min_pressure:.7f} MPa, below 0.01 MPa.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     
     # we use log transform for adsorption capacity, so it must be positive.
     if not (df["CH4_adsorption_m3t"] > 0).all():
@@ -170,6 +183,44 @@ def make_train_val_split(
 
     return final_train_df, val_df
 
+#5-fold GroupKFold cross-validation
+def make_cv_folds(
+    train_val_df: pd.DataFrame,
+    n_splits: int = 5,
+) -> list[dict]:
+
+    splitter = GroupKFold(n_splits=n_splits)
+    fold_indices = []
+
+    groups = train_val_df["experiment_id"]
+
+    for fold_number, (train_idx, val_idx) in enumerate(
+        splitter.split(train_val_df, groups=groups),
+        start=1,
+    ):
+        fold_train_df = train_val_df.iloc[train_idx]
+        fold_val_df = train_val_df.iloc[val_idx]
+
+        train_experiments = set(fold_train_df["experiment_id"])
+        val_experiments = set(fold_val_df["experiment_id"])
+
+        overlap = train_experiments.intersection(val_experiments)
+
+        if overlap:
+            raise ValueError(
+                f"Experiment leakage in fold {fold_number}: {overlap}"
+            )
+
+        fold_indices.append(
+            {
+                "fold": fold_number,
+                "train_idx": train_idx,
+                "val_idx": val_idx,
+            }
+        )
+
+    return fold_indices
+
 # Scaling and target transform
 def scale_features_and_target(
     train_df: pd.DataFrame,
@@ -195,6 +246,11 @@ def scale_features_and_target(
     raw_pressure_T1 = T1_df["pressure_MPa"].to_numpy().reshape(-1, 1)
     raw_pressure_T3 = T3_df["pressure_MPa"].to_numpy().reshape(-1, 1)
 
+    experiment_id_train = train_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
+    experiment_id_val = val_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
+    experiment_id_T1 = T1_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
+    experiment_id_T3 = T3_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
+
     return {
         "scaler": scaler,
         "X_train": X_train,
@@ -209,14 +265,64 @@ def scale_features_and_target(
         "raw_pressure_val": raw_pressure_val,
         "raw_pressure_T1": raw_pressure_T1,
         "raw_pressure_T3": raw_pressure_T3,
+        "experiment_id_train": experiment_id_train,
+        "experiment_id_val": experiment_id_val,
+        "experiment_id_T1": experiment_id_T1,
+        "experiment_id_T3": experiment_id_T3,
     }
+# final verification function for all splits.
+def verify_splits(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    T1_df: pd.DataFrame,
+    T3_df: pd.DataFrame,
+    pressure_threshold: float = 8.0,
+):
+    train_experiments = set(train_df["experiment_id"])
+    val_experiments = set(val_df["experiment_id"])
+    T1_experiments = set(T1_df["experiment_id"])
+    T3_experiments = set(T3_df["experiment_id"])
+
+    if train_experiments.intersection(val_experiments):
+        raise ValueError("Train/validation leakage detected.")
+    if train_experiments.intersection(T1_experiments):
+        raise ValueError("Train/T1 leakage detected.")
+    if val_experiments.intersection(T1_experiments):
+        raise ValueError("Validation/T1 leakage detected.")
+
+    if not T3_experiments.issubset(T1_experiments):
+        raise ValueError("T3 experiments must belong to T1.")
+
+    T1_rows = pd.MultiIndex.from_frame(T1_df)
+    T3_rows = pd.MultiIndex.from_frame(T3_df)
+    if not T3_rows.isin(T1_rows).all():
+        raise ValueError("T3 must contain only rows from T1.")
+
+    splits = {
+        "train": train_df,
+        "validation": val_df,
+        "T1": T1_df,
+        "T3": T3_df,
+    }
+
+    for split_name, split_df in splits.items():
+        if not (split_df["pressure_MPa"] > 0).all():
+            raise ValueError(
+                f"{split_name} contains non-positive pressure."
+            )
+
+    if not (T3_df["pressure_MPa"] > pressure_threshold).all():
+        raise ValueError(
+            f"T3 contains pressure at or below {pressure_threshold} MPa."
+        )
 
 # PyTorch dataset
 class AdsorptionDataset(Dataset):
-    def __init__(self, X, y, raw_pressure):
+    def __init__(self, X, y, raw_pressure, experiment_id):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32)
         self.raw_pressure = torch.tensor(raw_pressure, dtype=torch.float32)
+        self.experiment_id = torch.tensor(experiment_id, dtype=torch.long)
 
     def __len__(self):
         return len(self.X)
@@ -226,6 +332,7 @@ class AdsorptionDataset(Dataset):
             "x": self.X[idx],
             "y": self.y[idx],
             "raw_pressure": self.raw_pressure[idx],
+            "experiment_id": self.experiment_id[idx],
         }
 
     # PyTorch DataLoaders
@@ -234,24 +341,28 @@ def make_dataloaders(arrays: dict, batch_size: int = 64):
         arrays["X_train"],
         arrays["y_train"],
         arrays["raw_pressure_train"],
+        arrays["experiment_id_train"],
     )
 
     val_dataset = AdsorptionDataset(
         arrays["X_val"],
         arrays["y_val"],
         arrays["raw_pressure_val"],
+        arrays["experiment_id_val"],
     )
 
     T1_dataset = AdsorptionDataset(
         arrays["X_T1"],
         arrays["y_T1"],
         arrays["raw_pressure_T1"],
+        arrays["experiment_id_T1"],
     )
 
     T3_dataset = AdsorptionDataset(
         arrays["X_T3"],
         arrays["y_T3"],
         arrays["raw_pressure_T3"],
+        arrays["experiment_id_T3"],
     )
 
     train_loader = DataLoader(
@@ -288,7 +399,8 @@ if __name__== "__main__":
     train_val_df, T1_df = make_main_split(df)
     T3_df = make_t3_split(T1_df)
     train_df, val_df = make_train_val_split(train_val_df)
-
+    fold_indices = make_cv_folds(train_val_df)
+    verify_splits(train_df, val_df, T1_df, T3_df)
    
     print("Full data:", df.shape)
     print("Train data:", train_df.shape)
@@ -309,6 +421,12 @@ if __name__== "__main__":
     print("T3 experiments:", T3_df["experiment_id"].nunique())
     print()
 
+    for fold in fold_indices:
+        print(
+            f"Fold {fold['fold']}: "
+            f"{len(fold['train_idx'])} training samples, "
+            f"{len(fold['val_idx'])} validation samples"
+        )
     arrays = scale_features_and_target(
         train_df,
         val_df,
@@ -326,3 +444,4 @@ if __name__== "__main__":
     print("Batch x:", batch["x"].shape)
     print("Batch y:", batch["y"].shape)
     print("Batch raw pressure:", batch["raw_pressure"].shape)
+    print("Batch experiment ID:", batch["experiment_id"].shape)
