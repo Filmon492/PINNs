@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from typing import TypedDict
 import torch
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from data_pipeline import build_data_pipeline
 
@@ -66,5 +67,43 @@ def collect_predictions(
         "raw_pressure": torch.cat(raw_pressures),
         "experiment_id": torch.cat(experiment_ids),
     }
+
+# Compute regression metrics on the original adsorption scale.
+def compute_accuracy_metrics(
+    q_true: torch.Tensor,
+    q_hat: torch.Tensor,
+) -> dict[str, float]:
+    true_values = q_true.detach().cpu().numpy().reshape(-1)
+    predictions = q_hat.detach().cpu().numpy().reshape(-1)
+
+    if true_values.shape != predictions.shape:
+        raise ValueError("q_true and q_hat must have the same shape.")
+
+    if true_values.size == 0:
+        raise ValueError("Cannot calculate metrics from empty tensors.")
+
+    absolute_errors = np.abs(true_values - predictions)
+    relative_errors = absolute_errors / np.maximum(
+        np.abs(true_values),
+        1e-8,
+    )
+
+    return {
+        "R2": float(r2_score(true_values, predictions)),
+        "RMSE": float(
+            np.sqrt(mean_squared_error(true_values, predictions))
+        ),
+        "MAE": float(
+            mean_absolute_error(true_values, predictions)
+        ),
+        "MaxAE": float(absolute_errors.max()),
+        "median_relative_error_pct": float(
+            np.median(relative_errors) * 100
+        ),
+        "mean_relative_error_pct": float(
+            np.mean(relative_errors) * 100
+        ),
+    }
+
 if __name__ == "__main__":
-    main()
+   main()
