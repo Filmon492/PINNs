@@ -18,13 +18,18 @@ def main():
     print("T1 samples:", len(data["T1_loader"].dataset))
     print("T3 samples:", len(data["T3_loader"].dataset))
 
+
 class ModelOutput(TypedDict, total=False):
     q_hat: torch.Tensor
     q_max: torch.Tensor
     sigma_ale: torch.Tensor
 
+
 # validate model output while running
-def validate_model_output(output: ModelOutput,batch_size: int,) -> None:
+def validate_model_output(
+    output: ModelOutput,
+    batch_size: int,
+) -> None:
     if "q_hat" not in output:
         raise KeyError("Model output must contain 'q_hat'.")
 
@@ -50,6 +55,7 @@ def validate_model_output(output: ModelOutput,batch_size: int,) -> None:
 
         if (output["sigma_ale"] < 0).any().item():
             raise ValueError("sigma_ale must be non-negative.")
+
 
 # Collect predictions and matching observations from a DataLoader.
 def collect_predictions(
@@ -106,6 +112,7 @@ def collect_predictions(
 
     return collected
 
+
 # Activate dropout modules while keeping the rest of the model in eval mode.
 def enable_dropout_layers(model) -> None:
     dropout_modules = (
@@ -122,6 +129,7 @@ def enable_dropout_layers(model) -> None:
     for module in model.modules():
         if isinstance(module, dropout_modules):
             module.train()
+
 
 # Collect repeated stochastic predictions for MC Dropout uncertainty.
 def collect_mc_dropout_predictions(
@@ -155,14 +163,10 @@ def collect_mc_dropout_predictions(
                     output = model(x, raw_pressure)
                     validate_model_output(output, batch_size=len(x))
 
-                    pass_predictions.append(
-                        output["q_hat"].reshape(-1, 1).cpu()
-                    )
+                    pass_predictions.append(output["q_hat"].reshape(-1, 1).cpu())
 
                     if "sigma_ale" in output:
-                        pass_aleatoric.append(
-                            output["sigma_ale"].reshape(-1, 1).cpu()
-                        )
+                        pass_aleatoric.append(output["sigma_ale"].reshape(-1, 1).cpu())
 
                 q_hat_passes.append(torch.cat(pass_predictions))
 
@@ -185,6 +189,7 @@ def collect_mc_dropout_predictions(
         mc_predictions["sigma_ale_mc"] = torch.stack(sigma_ale_passes)
 
     return mc_predictions
+
 
 # Compute regression metrics on the original adsorption scale.
 def compute_accuracy_metrics(
@@ -213,20 +218,13 @@ def compute_accuracy_metrics(
 
     return {
         "R2": r2,
-        "RMSE": float(
-            np.sqrt(mean_squared_error(true_values, predictions))
-        ),
-        "MAE": float(
-            mean_absolute_error(true_values, predictions)
-        ),
+        "RMSE": float(np.sqrt(mean_squared_error(true_values, predictions))),
+        "MAE": float(mean_absolute_error(true_values, predictions)),
         "MaxAE": float(absolute_errors.max()),
-        "median_relative_error_pct": float(
-            np.median(relative_errors) * 100
-        ),
-        "mean_relative_error_pct": float(
-            np.mean(relative_errors) * 100
-        ),
+        "median_relative_error_pct": float(np.median(relative_errors) * 100),
+        "mean_relative_error_pct": float(np.mean(relative_errors) * 100),
     }
+
 
 # Compute calibration and uncertainty metrics from MC Dropout predictions.
 def compute_uq_metrics(
@@ -262,9 +260,7 @@ def compute_uq_metrics(
 
         sigma_ale_values = ale_values.mean(axis=0)
 
-    sigma_total_values = np.sqrt(
-        sigma_epi_values**2 + sigma_ale_values**2
-    )
+    sigma_total_values = np.sqrt(sigma_epi_values**2 + sigma_ale_values**2)
     sigma_total_values = np.maximum(sigma_total_values, 1e-8)
     absolute_errors = np.abs(true_values - mean_prediction)
 
@@ -308,11 +304,10 @@ def compute_uq_metrics(
 
     metrics["NLL"] = float(np.mean(nll_values))
     metrics["CRPS"] = float(np.mean(crps_values))
-    metrics["sharpness_95"] = float(
-        np.mean(2 * norm.ppf(0.975) * sigma_total_values)
-    )
+    metrics["sharpness_95"] = float(np.mean(2 * norm.ppf(0.975) * sigma_total_values))
 
     return metrics
+
 
 # Synchronize accelerator work before reading wall-clock time.
 def synchronize_device(device: torch.device) -> None:
@@ -320,6 +315,7 @@ def synchronize_device(device: torch.device) -> None:
         torch.cuda.synchronize(device)
     elif device.type == "mps" and hasattr(torch, "mps"):
         torch.mps.synchronize()
+
 
 # Compute practical runtime and model-size metrics for one evaluation.
 def compute_computational_metrics(
@@ -335,9 +331,7 @@ def compute_computational_metrics(
 
     total_parameters = sum(parameter.numel() for parameter in model.parameters())
     trainable_parameters = sum(
-        parameter.numel()
-        for parameter in model.parameters()
-        if parameter.requires_grad
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
 
     if elapsed_seconds == 0:
@@ -352,6 +346,7 @@ def compute_computational_metrics(
         "total_parameters": float(total_parameters),
         "trainable_parameters": float(trainable_parameters),
     }
+
 
 # Raise an error when a hard physical constraint is violated.
 def assert_hard_constraints(
@@ -387,6 +382,7 @@ def assert_hard_constraints(
                 f"Hard constraint '{constraint_name}' was violated: "
                 f"{metric_name} = {metric_value}."
             )
+
 
 # Evaluate accuracy and uncertainty for one data tier.
 def evaluate_accuracy(
@@ -465,6 +461,7 @@ def evaluate_accuracy(
         "predictions": collected,
     }
 
+
 # Evaluate one model on multiple data tiers using the same harness.
 def evaluate_model(
     model,
@@ -505,6 +502,7 @@ def evaluate_model(
         )
 
     return results
+
 
 # Convert nested evaluation results into one tabular metrics DataFrame.
 def flatten_evaluation_results(
@@ -615,6 +613,7 @@ def flatten_evaluation_results(
     ]
     return pd.DataFrame(rows, columns=columns)
 
+
 # Save evaluation metrics to CSV for reproducible reporting.
 def save_results_csv(
     results: dict[str, dict],
@@ -631,6 +630,149 @@ def save_results_csv(
     results_table.to_csv(output_path, index=False)
 
     return results_table
+
+
+# Escape text values before inserting them into a LaTeX table.
+def escape_latex_text(value: object) -> str:
+    text = str(value)
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+
+    for original, replacement in replacements.items():
+        text = text.replace(original, replacement)
+
+    return text
+
+
+# Format one metric value, including confidence bounds when available.
+def format_latex_metric_value(
+    value: float,
+    ci_lower: float,
+    ci_upper: float,
+    precision: int = 3,
+) -> str:
+    if not np.isfinite(value):
+        return "--"
+
+    formatted_value = f"{value:.{precision}g}"
+
+    if np.isfinite(ci_lower) and np.isfinite(ci_upper):
+        formatted_lower = f"{ci_lower:.{precision}g}"
+        formatted_upper = f"{ci_upper:.{precision}g}"
+        return f"{formatted_value} [{formatted_lower}, {formatted_upper}]"
+
+    return formatted_value
+
+
+# Generate a compact LaTeX table from flattened evaluation metrics.
+def make_latex_metrics_table(
+    results: dict[str, dict],
+    model_name: str = "model",
+    metric_groups: tuple[str, ...] = ("accuracy", "physical"),
+    metric_names: Optional[tuple[str, ...]] = None,
+    precision: int = 3,
+    caption: Optional[str] = None,
+    label: Optional[str] = None,
+) -> str:
+    results_table = flatten_evaluation_results(
+        results,
+        model_name=model_name,
+    )
+
+    if metric_groups:
+        results_table = results_table[results_table["metric_group"].isin(metric_groups)]
+
+    if metric_names is not None:
+        results_table = results_table[results_table["metric"].isin(metric_names)]
+
+    lines = [
+        r"\begin{table}[htbp]",
+        r"\centering",
+    ]
+
+    if caption:
+        lines.append(rf"\caption{{{escape_latex_text(caption)}}}")
+
+    if label:
+        lines.append(rf"\label{{{escape_latex_text(label)}}}")
+
+    lines.extend(
+        [
+            r"\begin{tabular}{lllll}",
+            r"\toprule",
+            r"Model & Tier & Group & Metric & Value [95\% CI] \\",
+            r"\midrule",
+        ]
+    )
+
+    for row in results_table.itertuples(index=False):
+        formatted_value = format_latex_metric_value(
+            row.value,
+            row.ci_lower,
+            row.ci_upper,
+            precision=precision,
+        )
+        lines.append(
+            " & ".join(
+                [
+                    escape_latex_text(row.model),
+                    escape_latex_text(row.tier),
+                    escape_latex_text(row.metric_group),
+                    escape_latex_text(row.metric),
+                    formatted_value,
+                ]
+            )
+            + r" \\"
+        )
+
+    lines.extend(
+        [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\end{table}",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+# Save a LaTeX metrics table for manuscript reporting.
+def save_results_latex(
+    results: dict[str, dict],
+    output_path: Path,
+    model_name: str = "model",
+    metric_groups: tuple[str, ...] = ("accuracy", "physical"),
+    metric_names: Optional[tuple[str, ...]] = None,
+    precision: int = 3,
+    caption: Optional[str] = None,
+    label: Optional[str] = None,
+) -> str:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    latex_table = make_latex_metrics_table(
+        results,
+        model_name=model_name,
+        metric_groups=metric_groups,
+        metric_names=metric_names,
+        precision=precision,
+        caption=caption,
+        label=label,
+    )
+    output_path.write_text(latex_table, encoding="utf-8")
+
+    return latex_table
+
 
 # Estimate metric confidence intervals by resampling complete experiments.
 def bootstrap_accuracy_metrics(
@@ -651,9 +793,7 @@ def bootstrap_accuracy_metrics(
     rng = np.random.default_rng(random_state)
     point_metrics = compute_accuracy_metrics(q_true, q_hat)
 
-    bootstrap_values = {
-        metric_name: [] for metric_name in point_metrics
-    }
+    bootstrap_values = {metric_name: [] for metric_name in point_metrics}
 
     for _ in range(n_bootstrap):
         sampled_experiments = rng.choice(
@@ -693,6 +833,7 @@ def bootstrap_accuracy_metrics(
 
     return results
 
+
 # Check that two evaluated variants were run on the same samples.
 def validate_paired_variant_results(
     variant_a: dict,
@@ -724,6 +865,7 @@ def validate_paired_variant_results(
 
     return predictions_a, predictions_b
 
+
 # Compute one named accuracy metric from a prediction dictionary.
 def compute_named_accuracy_metric(
     predictions: dict[str, torch.Tensor],
@@ -739,6 +881,7 @@ def compute_named_accuracy_metric(
         raise KeyError(f"Unknown accuracy metric: {metric_name}.")
 
     return metrics[metric_name]
+
 
 # Compare two variants on one tier with paired experiment-level statistics.
 def compare_variants(
@@ -859,6 +1002,7 @@ def compare_variants(
         "n_experiments": float(len(unique_experiments)),
     }
 
+
 # Apply Bonferroni correction when many comparisons are tested together.
 def bonferroni_correct(
     p_values: list[float],
@@ -873,17 +1017,15 @@ def bonferroni_correct(
 
     corrected_alpha = alpha / n_comparisons
     adjusted_p_values = [
-        min(float(p_value) * n_comparisons, 1.0)
-        for p_value in p_values
+        min(float(p_value) * n_comparisons, 1.0) for p_value in p_values
     ]
 
     return {
         "corrected_alpha": float(corrected_alpha),
         "adjusted_p_values": adjusted_p_values,
-        "significant": [
-            float(p_value) <= corrected_alpha for p_value in p_values
-        ],
+        "significant": [float(p_value) <= corrected_alpha for p_value in p_values],
     }
+
 
 # Test two binary design factors and their interaction for one metric.
 def anova_2x2(
@@ -963,6 +1105,7 @@ def anova_2x2(
 
     return results
 
+
 # Compare paired binary violation outcomes between two variants.
 def mcnemar_test(
     violations_a,
@@ -1012,6 +1155,7 @@ def mcnemar_test(
         "p_value": p_value,
     }
 
+
 # Compute the fraction of physically invalid negative predictions.
 def compute_negative_violation_rate(
     q_hat: torch.Tensor,
@@ -1021,9 +1165,9 @@ def compute_negative_violation_rate(
 
     negative_predictions = q_hat < 0
 
-    return float(
-        negative_predictions.float().mean().item()
-    )
+    return float(negative_predictions.float().mean().item())
+
+
 # Compute the fraction of predictions exceeding maximum capacity.
 def compute_saturation_violation_rate(
     q_hat: torch.Tensor,
@@ -1033,17 +1177,12 @@ def compute_saturation_violation_rate(
         raise ValueError("Cannot evaluate empty prediction tensors.")
 
     if q_hat.numel() != q_max.numel():
-        raise ValueError(
-            "q_hat and q_max must contain the same number of values."
-        )
+        raise ValueError("q_hat and q_max must contain the same number of values.")
 
-    saturation_violations = (
-        q_hat.reshape(-1) > q_max.reshape(-1)
-    )
+    saturation_violations = q_hat.reshape(-1) > q_max.reshape(-1)
 
-    return float(
-        saturation_violations.float().mean().item()
-    )
+    return float(saturation_violations.float().mean().item())
+
 
 # Compute how often predictions decrease as pressure increases.
 def compute_monotonicity_violation_rate(
@@ -1057,9 +1196,7 @@ def compute_monotonicity_violation_rate(
     if q_hat.numel() == 0:
         raise ValueError("Cannot evaluate an empty prediction tensor.")
 
-    if not (
-        q_hat.numel() == raw_pressure.numel() == experiment_id.numel()
-    ):
+    if not (q_hat.numel() == raw_pressure.numel() == experiment_id.numel()):
         raise ValueError(
             "q_hat, raw_pressure, and experiment_id must have the same length."
         )
@@ -1094,6 +1231,7 @@ def compute_monotonicity_violation_rate(
 
     return violation_count / comparison_count
 
+
 # Compute available physical violation rates from collected predictions.
 def compute_physical_violation_metrics(
     predictions: dict[str, torch.Tensor],
@@ -1108,12 +1246,8 @@ def compute_physical_violation_metrics(
         raise KeyError("Predictions must contain experiment_id.")
 
     metrics = {
-        "neg_rate": compute_negative_violation_rate(
-            predictions["q_hat"]
-        ),
-        "mono_rate": compute_monotonicity_violation_rate(
-            predictions
-        ),
+        "neg_rate": compute_negative_violation_rate(predictions["q_hat"]),
+        "mono_rate": compute_monotonicity_violation_rate(predictions),
     }
 
     if "q_max" in predictions:
@@ -1125,6 +1259,7 @@ def compute_physical_violation_metrics(
         metrics["sat_rate"] = float("nan")
 
     return metrics
+
 
 # Estimate physical violation confidence intervals by resampling experiments.
 def bootstrap_physical_violation_metrics(
@@ -1142,9 +1277,7 @@ def bootstrap_physical_violation_metrics(
     rng = np.random.default_rng(random_state)
     point_metrics = compute_physical_violation_metrics(predictions)
 
-    bootstrap_values = {
-        metric_name: [] for metric_name in point_metrics
-    }
+    bootstrap_values = {metric_name: [] for metric_name in point_metrics}
 
     for _ in range(n_bootstrap):
         sampled_experiments = rng.choice(
@@ -1171,9 +1304,7 @@ def bootstrap_physical_violation_metrics(
         if "q_max" in predictions:
             sampled_predictions["q_max"] = predictions["q_max"][indices]
 
-        sample_metrics = compute_physical_violation_metrics(
-            sampled_predictions
-        )
+        sample_metrics = compute_physical_violation_metrics(sampled_predictions)
 
         for metric_name, value in sample_metrics.items():
             if np.isfinite(value):
@@ -1199,5 +1330,6 @@ def bootstrap_physical_violation_metrics(
 
     return results
 
+
 if __name__ == "__main__":
-   main()
+    main()
