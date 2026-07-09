@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 
 # Data loading and column renaming
 CSV_PATH = Path("data/coal_gas_20250826.csv")
+DEFAULT_T2_RANK = "Subbituminous / Lignite"
 
 
 def load_data_csv(csv_path=CSV_PATH, nrows=None) -> pd.DataFrame:
@@ -88,6 +89,63 @@ def infer_experiment_id(df: pd.DataFrame) -> pd.DataFrame:
     df["experiment_id"] = df.groupby(group_columns, sort=False).ngroup().add(1)
 
     df["experiment_id"] = df["experiment_id"].map(lambda i: f"exp_{i:03d}")
+
+    return df
+
+
+# Infer coal rank from dry, ash-free proximate-analysis thresholds.
+def infer_coal_rank(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    if "FC" in df.columns:
+        fixed_carbon = df["FC"]
+    else:
+        fixed_carbon = 100 - df["moisture_wt"] - df["ash_wt"] - df["volatile_wt"]
+
+    daf_denominator = 100 - df["moisture_wt"] - df["ash_wt"]
+
+    if not (daf_denominator > 0).all():
+        raise ValueError("Dry, ash-free denominator must be positive.")
+
+    df["V_daf"] = df["volatile_wt"] / daf_denominator * 100
+    df["FC_daf"] = fixed_carbon / daf_denominator * 100
+
+    conditions = [
+        (df["FC_daf"] >= 86.0) & (df["V_daf"] <= 14.0),
+        (df["FC_daf"] >= 78.0)
+        & (df["FC_daf"] < 86.0)
+        & (df["V_daf"] >= 14.0)
+        & (df["V_daf"] < 22.0),
+        (df["FC_daf"] >= 69.0)
+        & (df["FC_daf"] < 78.0)
+        & (df["V_daf"] >= 22.0)
+        & (df["V_daf"] < 31.0),
+        (df["V_daf"] >= 31.0) & ((df["moisture_wt"] > 15.0) | (df["FC_daf"] < 69.0)),
+        df["V_daf"] >= 31.0,
+    ]
+    rank_names = [
+        "Anthracite",
+        "Low-Volatile Bituminous",
+        "Medium-Volatile Bituminous",
+        "Subbituminous / Lignite",
+        "High-Volatile Bituminous",
+    ]
+
+    df["coal_rank_inferred"] = np.select(
+        conditions,
+        rank_names,
+        default="Unknown Rank",
+    )
+
+    unknown_ranks = df["coal_rank_inferred"] == "Unknown Rank"
+
+    if unknown_ranks.any():
+        raise ValueError("Some rows could not be assigned an inferred coal rank.")
+
+    experiment_rank_counts = df.groupby("experiment_id")["coal_rank_inferred"].nunique()
+
+    if not (experiment_rank_counts == 1).all():
+        raise ValueError("Each experiment_id must map to exactly one coal rank.")
 
     return df
 
@@ -229,6 +287,36 @@ def make_main_split(
     return train_df, T1_df
 
 
+# Rank-level extrapolation split for T2.
+def make_t2_split(
+    df: pd.DataFrame,
+    t2_rank: str = DEFAULT_T2_RANK,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if "coal_rank_inferred" not in df.columns:
+        raise ValueError("T2 split requires coal_rank_inferred.")
+
+    available_ranks = sorted(df["coal_rank_inferred"].unique())
+
+    if t2_rank not in available_ranks:
+        raise ValueError(
+            f"T2 rank '{t2_rank}' is not available. "
+            f"Available ranks: {available_ranks}"
+        )
+
+    train_pool_df = (
+        df[df["coal_rank_inferred"] != t2_rank].copy().reset_index(drop=True)
+    )
+    T2_df = df[df["coal_rank_inferred"] == t2_rank].copy().reset_index(drop=True)
+
+    if train_pool_df.empty:
+        raise ValueError("T2 split left no data for training.")
+
+    if T2_df.empty:
+        raise ValueError("T2 split produced no held-out samples.")
+
+    return train_pool_df, T2_df
+
+
 def make_t3_split(
     T1_df: pd.DataFrame,
     pressure_threshold: float = 8.0,
@@ -317,6 +405,7 @@ def scale_features_and_target(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     T1_df: pd.DataFrame,
+    T2_df: pd.DataFrame,
     T3_df: pd.DataFrame,
     feature_names: list[str],
 ):
@@ -325,21 +414,25 @@ def scale_features_and_target(
     X_train = scaler.fit_transform(train_df[feature_names])
     X_val = scaler.transform(val_df[feature_names])
     X_T1 = scaler.transform(T1_df[feature_names])
+    X_T2 = scaler.transform(T2_df[feature_names])
     X_T3 = scaler.transform(T3_df[feature_names])
 
     y_train = np.log(train_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
     y_val = np.log(val_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
     y_T1 = np.log(T1_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
+    y_T2 = np.log(T2_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
     y_T3 = np.log(T3_df["CH4_adsorption_m3t"].to_numpy()).reshape(-1, 1)
 
     raw_pressure_train = train_df["pressure_MPa"].to_numpy().reshape(-1, 1)
     raw_pressure_val = val_df["pressure_MPa"].to_numpy().reshape(-1, 1)
     raw_pressure_T1 = T1_df["pressure_MPa"].to_numpy().reshape(-1, 1)
+    raw_pressure_T2 = T2_df["pressure_MPa"].to_numpy().reshape(-1, 1)
     raw_pressure_T3 = T3_df["pressure_MPa"].to_numpy().reshape(-1, 1)
 
     experiment_id_train = train_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
     experiment_id_val = val_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
     experiment_id_T1 = T1_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
+    experiment_id_T2 = T2_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
     experiment_id_T3 = T3_df["experiment_id"].str[4:].astype(np.int64).to_numpy()
 
     return {
@@ -347,18 +440,22 @@ def scale_features_and_target(
         "X_train": X_train,
         "X_val": X_val,
         "X_T1": X_T1,
+        "X_T2": X_T2,
         "X_T3": X_T3,
         "y_train": y_train,
         "y_val": y_val,
         "y_T1": y_T1,
+        "y_T2": y_T2,
         "y_T3": y_T3,
         "raw_pressure_train": raw_pressure_train,
         "raw_pressure_val": raw_pressure_val,
         "raw_pressure_T1": raw_pressure_T1,
+        "raw_pressure_T2": raw_pressure_T2,
         "raw_pressure_T3": raw_pressure_T3,
         "experiment_id_train": experiment_id_train,
         "experiment_id_val": experiment_id_val,
         "experiment_id_T1": experiment_id_T1,
+        "experiment_id_T2": experiment_id_T2,
         "experiment_id_T3": experiment_id_T3,
     }
 
@@ -368,12 +465,14 @@ def verify_splits(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     T1_df: pd.DataFrame,
+    T2_df: pd.DataFrame,
     T3_df: pd.DataFrame,
     pressure_threshold: float = 8.0,
 ):
     train_experiments = set(train_df["experiment_id"])
     val_experiments = set(val_df["experiment_id"])
     T1_experiments = set(T1_df["experiment_id"])
+    T2_experiments = set(T2_df["experiment_id"])
     T3_experiments = set(T3_df["experiment_id"])
 
     if train_experiments.intersection(val_experiments):
@@ -382,9 +481,29 @@ def verify_splits(
         raise ValueError("Train/T1 leakage detected.")
     if val_experiments.intersection(T1_experiments):
         raise ValueError("Validation/T1 leakage detected.")
+    if train_experiments.intersection(T2_experiments):
+        raise ValueError("Train/T2 leakage detected.")
+    if val_experiments.intersection(T2_experiments):
+        raise ValueError("Validation/T2 leakage detected.")
+    if T1_experiments.intersection(T2_experiments):
+        raise ValueError("T1/T2 leakage detected.")
 
     if not T3_experiments.issubset(T1_experiments):
         raise ValueError("T3 experiments must belong to T1.")
+
+    T2_ranks = set(T2_df["coal_rank_inferred"])
+    non_T2_ranks = set(
+        pd.concat(
+            [
+                train_df["coal_rank_inferred"],
+                val_df["coal_rank_inferred"],
+                T1_df["coal_rank_inferred"],
+            ]
+        )
+    )
+
+    if T2_ranks.intersection(non_T2_ranks):
+        raise ValueError("T2 coal rank leaked into train/validation/T1.")
 
     T1_rows = pd.MultiIndex.from_frame(T1_df)
     T3_rows = pd.MultiIndex.from_frame(T3_df)
@@ -395,6 +514,7 @@ def verify_splits(
         "train": train_df,
         "validation": val_df,
         "T1": T1_df,
+        "T2": T2_df,
         "T3": T3_df,
     }
 
@@ -449,6 +569,13 @@ def make_dataloaders(arrays: dict, batch_size: int = 64):
         arrays["experiment_id_T1"],
     )
 
+    T2_dataset = AdsorptionDataset(
+        arrays["X_T2"],
+        arrays["y_T2"],
+        arrays["raw_pressure_T2"],
+        arrays["experiment_id_T2"],
+    )
+
     T3_dataset = AdsorptionDataset(
         arrays["X_T3"],
         arrays["y_T3"],
@@ -474,18 +601,25 @@ def make_dataloaders(arrays: dict, batch_size: int = 64):
         shuffle=False,
     )
 
+    T2_loader = DataLoader(
+        T2_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
     T3_loader = DataLoader(
         T3_dataset,
         batch_size=batch_size,
         shuffle=False,
     )
 
-    return train_loader, val_loader, T1_loader, T3_loader
+    return train_loader, val_loader, T1_loader, T2_loader, T3_loader
 
 
 def make_cv_fold_data(
     train_val_df: pd.DataFrame,
     T1_df: pd.DataFrame,
+    T2_df: pd.DataFrame,
     T3_df: pd.DataFrame,
     feature_names: list[str],
     fold_indices: list[dict],
@@ -503,6 +637,7 @@ def make_cv_fold_data(
             fold_train_df,
             fold_val_df,
             T1_df,
+            T2_df,
             T3_df,
             feature_names,
         )
@@ -510,6 +645,7 @@ def make_cv_fold_data(
             fold_train_loader,
             fold_val_loader,
             fold_T1_loader,
+            fold_T2_loader,
             fold_T3_loader,
         ) = make_dataloaders(
             fold_arrays,
@@ -524,6 +660,7 @@ def make_cv_fold_data(
                 "train_loader": fold_train_loader,
                 "val_loader": fold_val_loader,
                 "T1_loader": fold_T1_loader,
+                "T2_loader": fold_T2_loader,
                 "T3_loader": fold_T3_loader,
                 "scaler": fold_arrays["scaler"],
                 "arrays": fold_arrays,
@@ -543,6 +680,7 @@ def build_data_pipeline(
     batch_size: int = 64,
     test_size: float = 0.2,
     val_size: float = 0.2,
+    t2_rank: str = DEFAULT_T2_RANK,
     pressure_threshold: float = 8.0,
     n_splits: int = 5,
     n_strata_bins: int = 3,
@@ -552,8 +690,13 @@ def build_data_pipeline(
     df = validate_data(df)
     df = infer_experiment_id(df)
     df, feature_names = engineer_features(df)
-    train_val_df, T1_df = make_main_split(
+    df = infer_coal_rank(df)
+    train_pool_df, T2_df = make_t2_split(
         df,
+        t2_rank=t2_rank,
+    )
+    train_val_df, T1_df = make_main_split(
+        train_pool_df,
         test_size=test_size,
         random_state=random_state,
         n_strata_bins=n_strata_bins,
@@ -575,6 +718,7 @@ def build_data_pipeline(
         train_df,
         val_df,
         T1_df,
+        T2_df,
         T3_df,
         pressure_threshold=pressure_threshold,
     )
@@ -583,16 +727,18 @@ def build_data_pipeline(
         train_df,
         val_df,
         T1_df,
+        T2_df,
         T3_df,
         feature_names,
     )
-    train_loader, val_loader, T1_loader, T3_loader = make_dataloaders(
+    train_loader, val_loader, T1_loader, T2_loader, T3_loader = make_dataloaders(
         arrays,
         batch_size=batch_size,
     )
     cv_folds = make_cv_fold_data(
         train_val_df,
         T1_df,
+        T2_df,
         T3_df,
         feature_names,
         fold_indices,
@@ -603,30 +749,36 @@ def build_data_pipeline(
         "train_loader": train_loader,
         "val_loader": val_loader,
         "T1_loader": T1_loader,
+        "T2_loader": T2_loader,
         "T3_loader": T3_loader,
         "scaler": arrays["scaler"],
         "feature_names": feature_names,
+        "t2_rank": t2_rank,
         "fold_indices": fold_indices,
         "cv_folds": cv_folds,
         "arrays": arrays,
         "splits": {
             "full": df,
             "train_val": train_val_df,
+            "train_pool": train_pool_df,
             "train": train_df,
             "validation": val_df,
             "T1": T1_df,
+            "T2": T2_df,
             "T3": T3_df,
         },
         "raw_pressure": {
             "train": train_loader.dataset.raw_pressure,
             "validation": val_loader.dataset.raw_pressure,
             "T1": T1_loader.dataset.raw_pressure,
+            "T2": T2_loader.dataset.raw_pressure,
             "T3": T3_loader.dataset.raw_pressure,
         },
         "experiment_id": {
             "train": train_loader.dataset.experiment_id,
             "validation": val_loader.dataset.experiment_id,
             "T1": T1_loader.dataset.experiment_id,
+            "T2": T2_loader.dataset.experiment_id,
             "T3": T3_loader.dataset.experiment_id,
         },
     }
@@ -641,24 +793,33 @@ if __name__ == "__main__":
     train_df = splits["train"]
     val_df = splits["validation"]
     T1_df = splits["T1"]
+    T2_df = splits["T2"]
     T3_df = splits["T3"]
 
     print("Full data:", df.shape)
     print("Train data:", train_df.shape)
     print("Validation data:", val_df.shape)
     print("T1 data:", T1_df.shape)
+    print("T2 data:", T2_df.shape)
     print("T3 data:", T3_df.shape)
     print()
 
     print("Experiment overlap:")
     print(set(train_df["experiment_id"]).intersection(set(T1_df["experiment_id"])))
     print(set(val_df["experiment_id"]).intersection(set(train_df["experiment_id"])))
+    print(set(T2_df["experiment_id"]).intersection(set(train_df["experiment_id"])))
+    print()
+
+    print("Inferred coal ranks:")
+    print(df["coal_rank_inferred"].value_counts())
+    print("T2 held-out rank:", pipeline["t2_rank"])
     print()
 
     print("Total experiments:", df["experiment_id"].nunique())
     print("Train experiments:", train_df["experiment_id"].nunique())
     print("Validation experiments:", val_df["experiment_id"].nunique())
     print("T1 experiments:", T1_df["experiment_id"].nunique())
+    print("T2 experiments:", T2_df["experiment_id"].nunique())
     print("T3 experiments:", T3_df["experiment_id"].nunique())
     print()
 

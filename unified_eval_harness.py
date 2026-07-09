@@ -16,6 +16,7 @@ from data_pipeline import build_data_pipeline
 def main():
     data = build_data_pipeline()
     print("T1 samples:", len(data["T1_loader"].dataset))
+    print("T2 samples:", len(data["T2_loader"].dataset))
     print("T3 samples:", len(data["T3_loader"].dataset))
 
 
@@ -466,7 +467,7 @@ def evaluate_accuracy(
 def evaluate_model(
     model,
     pipeline: dict,
-    tier_names: tuple[str, ...] = ("T1", "T3"),
+    tier_names: tuple[str, ...] = ("T1", "T2", "T3"),
     device: str = "cpu",
     n_bootstrap: int = 100,
     n_mc: int = 100,
@@ -479,6 +480,7 @@ def evaluate_model(
         "validation": "val_loader",
         "val": "val_loader",
         "T1": "T1_loader",
+        "T2": "T2_loader",
         "T3": "T3_loader",
     }
 
