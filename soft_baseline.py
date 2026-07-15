@@ -7,12 +7,16 @@ from torch.nn import functional as F
 
 from data_pipeline import build_data_pipeline
 
+R_GAS = 8.314
+
 
 @dataclass
 class V1ModelConfig:
     input_dim: int = 12
     hidden_dims: tuple[int, ...] = (512, 1024, 512, 256, 128)
     dropout: float = 0.1
+    temperature_feature_idx: int = 3
+    pressure_feature_idx: int = 4
     softplus_epsilon: float = 1e-6
     min_log_sigma2: float = -10.0
     max_log_sigma2: float = 6.0
@@ -159,12 +163,70 @@ def bounds_loss(output: dict[str, torch.Tensor]) -> torch.Tensor:
     return torch.mean(lower_violation + upper_violation)
 
 
-# Combine data loss and the first soft physics penalties.
+# Penalize negative adsorption-pressure slopes.
+def monotonicity_loss(
+    output: dict[str, torch.Tensor],
+    x: torch.Tensor,
+    pressure_feature_idx: int,
+) -> torch.Tensor:
+    if not x.requires_grad:
+        raise ValueError("x must require gradients for monotonicity_loss.")
+
+    gradient = torch.autograd.grad(
+        output["q_hat"].sum(),
+        x,
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+    pressure_gradient = gradient[:, pressure_feature_idx : pressure_feature_idx + 1]
+
+    return F.relu(-pressure_gradient).mean()
+
+
+# Penalize deviations from the van't Hoff temperature relation.
+def vant_hoff_loss(
+    output: dict[str, torch.Tensor],
+    x: torch.Tensor,
+    temperature_feature_idx: int,
+    temperature_center: float,
+    temperature_scale: float,
+) -> torch.Tensor:
+    if not x.requires_grad:
+        raise ValueError("x must require gradients for vant_hoff_loss.")
+
+    if temperature_scale == 0:
+        raise ValueError("temperature_scale must be nonzero.")
+
+    ln_K = torch.log(torch.clamp(output["K"], min=1e-8))
+    gradient = torch.autograd.grad(
+        ln_K.sum(),
+        x,
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+    scaled_temperature = x[:, temperature_feature_idx : temperature_feature_idx + 1]
+    raw_temperature = scaled_temperature * temperature_scale + temperature_center
+    d_lnK_d_scaled_T = gradient[
+        :,
+        temperature_feature_idx : temperature_feature_idx + 1,
+    ]
+    d_lnK_d_T = d_lnK_d_scaled_T / temperature_scale
+    d_lnK_d_invT = d_lnK_d_T * (-(raw_temperature**2))
+    target = -output["delta_H"] / R_GAS
+
+    return F.mse_loss(d_lnK_d_invT, target)
+
+
+# Combine data loss and all soft physics penalties.
 def compute_v1_losses(
     output: dict[str, torch.Tensor],
     y_log: torch.Tensor,
     raw_pressure: torch.Tensor,
     lambda_p: float,
+    x: torch.Tensor,
+    config: V1ModelConfig,
+    temperature_center: float,
+    temperature_scale: float,
 ) -> dict[str, torch.Tensor]:
     q_true = torch.exp(y_log)
     data_loss = heteroscedastic_nll_loss(
@@ -174,7 +236,19 @@ def compute_v1_losses(
     )
     sips_penalty = sips_loss(output, raw_pressure)
     bounds_penalty = bounds_loss(output)
-    physics_loss = sips_penalty + bounds_penalty
+    mono_penalty = monotonicity_loss(
+        output,
+        x,
+        pressure_feature_idx=config.pressure_feature_idx,
+    )
+    vH_penalty = vant_hoff_loss(
+        output,
+        x,
+        temperature_feature_idx=config.temperature_feature_idx,
+        temperature_center=temperature_center,
+        temperature_scale=temperature_scale,
+    )
+    physics_loss = sips_penalty + bounds_penalty + mono_penalty + vH_penalty
     total_loss = data_loss + lambda_p * physics_loss
 
     return {
@@ -183,6 +257,8 @@ def compute_v1_losses(
         "physics_loss": physics_loss,
         "sips_loss": sips_penalty,
         "bounds_loss": bounds_penalty,
+        "mono_loss": mono_penalty,
+        "vH_loss": vH_penalty,
     }
 
 
@@ -192,12 +268,21 @@ def smoke_test_model() -> None:
     batch = next(iter(pipeline["train_loader"]))
     model = SoftBaselinePINN()
 
-    output = model(batch["x"], batch["raw_pressure"])
+    x = batch["x"].detach().clone().requires_grad_(True)
+    output = model(x, batch["raw_pressure"])
     losses = compute_v1_losses(
         output,
         y_log=batch["y"],
         raw_pressure=batch["raw_pressure"],
         lambda_p=0.1,
+        x=x,
+        config=model.config,
+        temperature_center=float(
+            pipeline["scaler"].center_[model.config.temperature_feature_idx]
+        ),
+        temperature_scale=float(
+            pipeline["scaler"].scale_[model.config.temperature_feature_idx]
+        ),
     )
 
     print("x:", batch["x"].shape)
@@ -210,6 +295,8 @@ def smoke_test_model() -> None:
     print("total_loss:", float(losses["total_loss"].detach()))
     print("data_loss:", float(losses["data_loss"].detach()))
     print("physics_loss:", float(losses["physics_loss"].detach()))
+    print("mono_loss:", float(losses["mono_loss"].detach()))
+    print("vH_loss:", float(losses["vH_loss"].detach()))
 
 
 if __name__ == "__main__":
