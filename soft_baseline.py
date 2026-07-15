@@ -23,6 +23,17 @@ class V1ModelConfig:
     enthalpy_scale_j_per_mol: float = 10_000.0
 
 
+@dataclass
+class TrainingConfig:
+    lambda_p: float = 0.1
+    lr: float = 1e-3
+    weight_decay: float = 1e-5
+    max_epochs: int = 1000
+    patience: int = 100
+    gradient_clip_norm: float = 5.0
+    device: str = "cpu"
+
+
 # Residual block with LayerNorm and Swish/SiLU activation.
 class ResidualBlock(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, dropout: float):
@@ -260,6 +271,59 @@ def compute_v1_losses(
         "mono_loss": mono_penalty,
         "vH_loss": vH_penalty,
     }
+
+
+# Run one training pass over all batches in train_loader.
+def train_one_epoch(
+    model: SoftBaselinePINN,
+    train_loader,
+    optimizer: torch.optim.Optimizer,
+    training_config: TrainingConfig,
+    temperature_center: float,
+    temperature_scale: float,
+) -> dict[str, float]:
+    model.train()
+    device = torch.device(training_config.device)
+    loss_totals: dict[str, float] = {}
+    n_batches = 0
+
+    for batch in train_loader:
+        x = batch["x"].to(device).detach().clone().requires_grad_(True)
+        y_log = batch["y"].to(device)
+        raw_pressure = batch["raw_pressure"].to(device)
+
+        output = model(x, raw_pressure)
+        losses = compute_v1_losses(
+            output,
+            y_log=y_log,
+            raw_pressure=raw_pressure,
+            lambda_p=training_config.lambda_p,
+            x=x,
+            config=model.config,
+            temperature_center=temperature_center,
+            temperature_scale=temperature_scale,
+        )
+
+        optimizer.zero_grad()
+        losses["total_loss"].backward()
+
+        if training_config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=training_config.gradient_clip_norm,
+            )
+
+        optimizer.step()
+
+        for name, value in losses.items():
+            loss_totals[name] = loss_totals.get(name, 0.0) + float(value.detach())
+
+        n_batches += 1
+
+    if n_batches == 0:
+        raise ValueError("train_loader produced no batches.")
+
+    return {name: value / n_batches for name, value in loss_totals.items()}
 
 
 # Quick architecture check using one batch from the data pipeline.
