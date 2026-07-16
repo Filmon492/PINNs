@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import torch
@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from data_pipeline import build_data_pipeline
 
 R_GAS = 8.314
+DEFAULT_LAMBDA_P_VALUES = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0)
 
 
 @dataclass
@@ -32,6 +33,13 @@ class TrainingConfig:
     patience: int = 100
     gradient_clip_norm: float = 5.0
     device: str = "cpu"
+
+
+# Make repeated training runs comparable by using the same random start.
+def set_torch_seed(seed: int) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 # Residual block with LayerNorm and Swish/SiLU activation.
@@ -443,6 +451,111 @@ def train_v1_model(
     model.load_state_dict(best_state)
 
     return model, history
+
+
+# Train one V1 model per lambda_p value and summarize validation performance.
+def run_lambda_sweep(
+    train_loader,
+    val_loader,
+    temperature_center: float,
+    temperature_scale: float,
+    lambda_p_values: tuple[float, ...] = DEFAULT_LAMBDA_P_VALUES,
+    model_config: Optional[V1ModelConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    seed: int = 42,
+) -> tuple[list[dict[str, float]], dict[str, float]]:
+    if not lambda_p_values:
+        raise ValueError("lambda_p_values must contain at least one value.")
+
+    results: list[dict[str, float]] = []
+    base_model_config = model_config or V1ModelConfig()
+    base_training_config = training_config or TrainingConfig()
+
+    for lambda_p in lambda_p_values:
+        set_torch_seed(seed)
+        model = SoftBaselinePINN(base_model_config)
+        current_training_config = replace(
+            base_training_config,
+            lambda_p=float(lambda_p),
+        )
+
+        _, history = train_v1_model(
+            model,
+            train_loader,
+            val_loader,
+            current_training_config,
+            temperature_center,
+            temperature_scale,
+        )
+
+        best_epoch = int(history[-1]["best_epoch"])
+        best_row = history[best_epoch - 1]
+        results.append(
+            {
+                "lambda_p": float(lambda_p),
+                "epochs_trained": float(len(history)),
+                "best_epoch": best_row["epoch"],
+                "best_val_loss": best_row["val_total_loss"],
+                "best_val_data_loss": best_row["val_data_loss"],
+                "best_val_physics_loss": best_row["val_physics_loss"],
+                "best_val_sips_loss": best_row["val_sips_loss"],
+                "best_val_bounds_loss": best_row["val_bounds_loss"],
+                "best_val_mono_loss": best_row["val_mono_loss"],
+                "best_val_vH_loss": best_row["val_vH_loss"],
+            }
+        )
+
+    best_result = min(results, key=lambda row: row["best_val_loss"])
+
+    return results, best_result
+
+
+# Build the data pipeline and run the V1 soft-baseline lambda_p experiment.
+def run_soft_baseline_exp(
+    batch_size: int = 64,
+    lambda_p_values: tuple[float, ...] = DEFAULT_LAMBDA_P_VALUES,
+    model_config: Optional[V1ModelConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    seed: int = 42,
+    verbose: bool = True,
+) -> tuple[list[dict[str, float]], dict[str, float]]:
+    resolved_model_config = model_config or V1ModelConfig()
+    resolved_training_config = training_config or TrainingConfig()
+    pipeline = build_data_pipeline(batch_size=batch_size)
+    scaler = pipeline["scaler"]
+    temperature_idx = resolved_model_config.temperature_feature_idx
+    temperature_center = float(scaler.center_[temperature_idx])
+    temperature_scale = float(scaler.scale_[temperature_idx])
+
+    results, best_result = run_lambda_sweep(
+        train_loader=pipeline["train_loader"],
+        val_loader=pipeline["val_loader"],
+        temperature_center=temperature_center,
+        temperature_scale=temperature_scale,
+        lambda_p_values=lambda_p_values,
+        model_config=resolved_model_config,
+        training_config=resolved_training_config,
+        seed=seed,
+    )
+
+    if verbose:
+        print("lambda_p sweep results")
+        print("lambda_p | epochs | best_epoch | val_total | val_data | val_physics")
+        for row in results:
+            print(
+                f"{row['lambda_p']:>8.3g} | "
+                f"{row['epochs_trained']:>6.0f} | "
+                f"{row['best_epoch']:>10.0f} | "
+                f"{row['best_val_loss']:>9.4g} | "
+                f"{row['best_val_data_loss']:>8.4g} | "
+                f"{row['best_val_physics_loss']:>11.4g}"
+            )
+
+        print()
+        print(f"Best lambda_p: {best_result['lambda_p']}")
+        print(f"Best validation loss: {best_result['best_val_loss']:.6g}")
+
+    return results, best_result
 
 
 # Quick architecture check using one batch from the data pipeline.
