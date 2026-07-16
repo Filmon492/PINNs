@@ -367,6 +367,84 @@ def validate_one_epoch(
     return {name: value / n_batches for name, value in loss_totals.items()}
 
 
+# Train V1 across many epochs with validation tracking and early stopping.
+def train_v1_model(
+    model: SoftBaselinePINN,
+    train_loader,
+    val_loader,
+    training_config: TrainingConfig,
+    temperature_center: float,
+    temperature_scale: float,
+) -> tuple[SoftBaselinePINN, list[dict[str, float]]]:
+    device = torch.device(training_config.device)
+    model = model.to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=training_config.lr,
+        weight_decay=training_config.weight_decay,
+    )
+
+    best_val_loss = float("inf")
+    best_epoch = 0
+    best_state: dict[str, torch.Tensor] | None = None
+    epochs_without_improvement = 0
+    history: list[dict[str, float]] = []
+
+    for epoch in range(1, training_config.max_epochs + 1):
+        train_metrics = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            training_config,
+            temperature_center,
+            temperature_scale,
+        )
+        val_metrics = validate_one_epoch(
+            model,
+            val_loader,
+            training_config,
+            temperature_center,
+            temperature_scale,
+        )
+
+        val_loss = val_metrics["total_loss"]
+        improved = val_loss < best_val_loss
+
+        if improved:
+            best_val_loss = val_loss
+            best_epoch = epoch
+            epochs_without_improvement = 0
+            best_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
+        else:
+            epochs_without_improvement += 1
+
+        history_row = {
+            "epoch": float(epoch),
+            "best_epoch": float(best_epoch),
+            "best_val_loss": best_val_loss,
+        }
+        history_row.update(
+            {f"train_{name}": value for name, value in train_metrics.items()}
+        )
+        history_row.update(
+            {f"val_{name}": value for name, value in val_metrics.items()}
+        )
+        history.append(history_row)
+
+        if epochs_without_improvement >= training_config.patience:
+            break
+
+    if best_state is None:
+        raise ValueError("Training did not produce a valid model state.")
+
+    model.load_state_dict(best_state)
+
+    return model, history
+
+
 # Quick architecture check using one batch from the data pipeline.
 def smoke_test_model() -> None:
     pipeline = build_data_pipeline(batch_size=8)
