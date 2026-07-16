@@ -326,6 +326,47 @@ def train_one_epoch(
     return {name: value / n_batches for name, value in loss_totals.items()}
 
 
+# Evaluate one full validation pass without updating model parameters.
+def validate_one_epoch(
+    model: SoftBaselinePINN,
+    val_loader,
+    training_config: TrainingConfig,
+    temperature_center: float,
+    temperature_scale: float,
+) -> dict[str, float]:
+    model.eval()
+    device = torch.device(training_config.device)
+    loss_totals: dict[str, float] = {}
+    n_batches = 0
+
+    for batch in val_loader:
+        x = batch["x"].to(device).detach().clone().requires_grad_(True)
+        y_log = batch["y"].to(device)
+        raw_pressure = batch["raw_pressure"].to(device)
+
+        output = model(x, raw_pressure)
+        losses = compute_v1_losses(
+            output,
+            y_log=y_log,
+            raw_pressure=raw_pressure,
+            lambda_p=training_config.lambda_p,
+            x=x,
+            config=model.config,
+            temperature_center=temperature_center,
+            temperature_scale=temperature_scale,
+        )
+
+        for name, value in losses.items():
+            loss_totals[name] = loss_totals.get(name, 0.0) + float(value.detach())
+
+        n_batches += 1
+
+    if n_batches == 0:
+        raise ValueError("val_loader produced no batches.")
+
+    return {name: value / n_batches for name, value in loss_totals.items()}
+
+
 # Quick architecture check using one batch from the data pipeline.
 def smoke_test_model() -> None:
     pipeline = build_data_pipeline(batch_size=8)
