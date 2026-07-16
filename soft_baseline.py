@@ -1,6 +1,8 @@
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -556,6 +558,159 @@ def run_soft_baseline_exp(
         print(f"Best validation loss: {best_result['best_val_loss']:.6g}")
 
     return results, best_result
+
+
+# Train the selected soft baseline and evaluate it on T1/T2/T3 with the harness.
+def evaluate_best_soft_baseline(
+    pipeline: dict,
+    best_result: dict[str, float],
+    model_config: Optional[V1ModelConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    tier_names: tuple[str, ...] = ("T1", "T2", "T3"),
+    n_bootstrap: int = 100,
+    n_mc: int = 100,
+    seed: int = 42,
+) -> tuple[SoftBaselinePINN, list[dict[str, float]], dict[str, dict]]:
+    from unified_eval_harness import evaluate_model
+
+    resolved_model_config = model_config or V1ModelConfig()
+    resolved_training_config = training_config or TrainingConfig()
+    selected_training_config = replace(
+        resolved_training_config,
+        lambda_p=float(best_result["lambda_p"]),
+    )
+    scaler = pipeline["scaler"]
+    temperature_idx = resolved_model_config.temperature_feature_idx
+    temperature_center = float(scaler.center_[temperature_idx])
+    temperature_scale = float(scaler.scale_[temperature_idx])
+
+    set_torch_seed(seed)
+    model = SoftBaselinePINN(resolved_model_config)
+    model, history = train_v1_model(
+        model,
+        pipeline["train_loader"],
+        pipeline["val_loader"],
+        selected_training_config,
+        temperature_center,
+        temperature_scale,
+    )
+    evaluation_results = evaluate_model(
+        model,
+        pipeline,
+        tier_names=tier_names,
+        device=selected_training_config.device,
+        n_bootstrap=n_bootstrap,
+        n_mc=n_mc,
+        random_state=seed,
+    )
+
+    return model, history, evaluation_results
+
+
+# Run the full V1 soft-baseline experiment and save reusable artifacts.
+def run_and_save_soft_baseline_exp(
+    batch_size: int = 64,
+    lambda_p_values: tuple[float, ...] = DEFAULT_LAMBDA_P_VALUES,
+    model_config: Optional[V1ModelConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    tier_names: tuple[str, ...] = ("T1", "T2", "T3"),
+    results_dir=Path("results"),
+    checkpoint_dir=Path("checkpoints"),
+    n_bootstrap: int = 100,
+    n_mc: int = 100,
+    seed: int = 42,
+    verbose: bool = True,
+) -> dict[str, object]:
+    from unified_eval_harness import save_results_csv
+
+    resolved_model_config = model_config or V1ModelConfig()
+    resolved_training_config = training_config or TrainingConfig()
+    pipeline = build_data_pipeline(batch_size=batch_size)
+    scaler = pipeline["scaler"]
+    temperature_idx = resolved_model_config.temperature_feature_idx
+    temperature_center = float(scaler.center_[temperature_idx])
+    temperature_scale = float(scaler.scale_[temperature_idx])
+
+    results_dir = Path(results_dir)
+    checkpoint_dir = Path(checkpoint_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    lambda_results, best_result = run_lambda_sweep(
+        train_loader=pipeline["train_loader"],
+        val_loader=pipeline["val_loader"],
+        temperature_center=temperature_center,
+        temperature_scale=temperature_scale,
+        lambda_p_values=lambda_p_values,
+        model_config=resolved_model_config,
+        training_config=resolved_training_config,
+        seed=seed,
+    )
+    lambda_sweep_path = results_dir / "soft_baseline_lambda_sweep.csv"
+    pd.DataFrame(lambda_results).to_csv(lambda_sweep_path, index=False)
+
+    model, history, evaluation_results = evaluate_best_soft_baseline(
+        pipeline,
+        best_result,
+        model_config=resolved_model_config,
+        training_config=resolved_training_config,
+        tier_names=tier_names,
+        n_bootstrap=n_bootstrap,
+        n_mc=n_mc,
+        seed=seed,
+    )
+
+    history_path = results_dir / "soft_baseline_training_history.csv"
+    pd.DataFrame(history).to_csv(history_path, index=False)
+
+    evaluation_metrics_path = results_dir / "soft_baseline_eval_metrics.csv"
+    evaluation_table = save_results_csv(
+        evaluation_results,
+        evaluation_metrics_path,
+        model_name="V1_soft_baseline",
+    )
+
+    selected_training_config = replace(
+        resolved_training_config,
+        lambda_p=float(best_result["lambda_p"]),
+    )
+    checkpoint_path = checkpoint_dir / "soft_baseline_v1.pt"
+    torch.save(
+        {
+            "model_state_dict": {
+                name: value.detach().cpu() for name, value in model.state_dict().items()
+            },
+            "model_config": asdict(resolved_model_config),
+            "training_config": asdict(selected_training_config),
+            "best_result": best_result,
+            "feature_names": pipeline["feature_names"],
+            "t2_rank": pipeline["t2_rank"],
+            "lambda_p_values": list(lambda_p_values),
+            "seed": seed,
+        },
+        checkpoint_path,
+    )
+
+    if verbose:
+        print(f"Saved lambda sweep: {lambda_sweep_path}")
+        print(f"Saved training history: {history_path}")
+        print(f"Saved evaluation metrics: {evaluation_metrics_path}")
+        print(f"Saved checkpoint: {checkpoint_path}")
+
+    return {
+        "model": model,
+        "lambda_results": lambda_results,
+        "best_result": best_result,
+        "history": history,
+        "evaluation_results": evaluation_results,
+        "evaluation_table": evaluation_table,
+        "paths": {
+            "lambda_sweep": lambda_sweep_path,
+            "training_history": history_path,
+            "evaluation_metrics": evaluation_metrics_path,
+            "checkpoint": checkpoint_path,
+        },
+    }
 
 
 # Quick architecture check using one batch from the data pipeline.
