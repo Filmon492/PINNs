@@ -780,7 +780,6 @@ def save_lambda_tradeoff_plot(
     x_labels = [f"{value:g}" for value in summary_table["lambda_p"]]
 
     fig, left_axis = plt.subplots(figsize=(8, 4.5))
-    right_axis = left_axis.twinx()
 
     left_axis.plot(
         x_positions,
@@ -789,23 +788,57 @@ def save_lambda_tradeoff_plot(
         color="tab:blue",
         label="Validation RMSE",
     )
-    right_axis.plot(
-        x_positions,
-        summary_table["selection_val_violation_rate_mean"],
-        marker="s",
-        color="tab:red",
-        label="Violation rate",
-    )
+
+    violation_column = "selection_val_violation_rate_mean"
+    if violation_column not in summary_table.columns:
+        physical_columns = [
+            column_name
+            for column_name in (
+                "selection_val_neg_rate_mean",
+                "selection_val_mono_rate_mean",
+                "selection_val_sat_rate_mean",
+            )
+            if column_name in summary_table.columns
+        ]
+        if physical_columns:
+            violation_column = "_available_violation_rate_mean"
+            summary_table[violation_column] = summary_table[physical_columns].max(
+                axis=1
+            )
+
+    right_axis = None
+    if violation_column in summary_table.columns:
+        right_axis = left_axis.twinx()
+        right_axis.plot(
+            x_positions,
+            summary_table[violation_column],
+            marker="s",
+            color="tab:red",
+            label="Violation rate",
+        )
+        right_axis.set_ylabel("Physical violation rate", color="tab:red")
+    else:
+        left_axis.text(
+            0.02,
+            0.95,
+            "Physical violation rate unavailable in this summary",
+            transform=left_axis.transAxes,
+            va="top",
+            color="tab:red",
+            fontsize=9,
+        )
 
     left_axis.set_xlabel("lambda_p")
     left_axis.set_ylabel("Validation RMSE", color="tab:blue")
-    right_axis.set_ylabel("Physical violation rate", color="tab:red")
     left_axis.set_xticks(x_positions)
     left_axis.set_xticklabels(x_labels)
     left_axis.grid(True, axis="y", alpha=0.3)
 
     handles_left, labels_left = left_axis.get_legend_handles_labels()
-    handles_right, labels_right = right_axis.get_legend_handles_labels()
+    if right_axis is None:
+        handles_right, labels_right = [], []
+    else:
+        handles_right, labels_right = right_axis.get_legend_handles_labels()
     left_axis.legend(
         handles_left + handles_right,
         labels_left + labels_right,
