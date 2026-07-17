@@ -11,6 +11,7 @@ from data_pipeline import build_data_pipeline
 
 R_GAS = 8.314
 DEFAULT_LAMBDA_P_VALUES = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0)
+DEFAULT_RANDOM_SEEDS = (0, 1, 2)
 
 
 @dataclass
@@ -377,6 +378,61 @@ def validate_one_epoch(
     return {name: value / n_batches for name, value in loss_totals.items()}
 
 
+# Combine validation accuracy, physical violations, and optional UQ metrics.
+def summarize_validation_metrics(
+    model: SoftBaselinePINN,
+    val_loader,
+    device: str,
+    n_mc: int = 0,
+) -> dict[str, dict[str, float]]:
+    from unified_eval_harness import (
+        collect_mc_dropout_predictions,
+        collect_predictions,
+        compute_accuracy_metrics,
+        compute_physical_violation_metrics,
+        compute_uq_metrics,
+    )
+
+    predictions = collect_predictions(
+        model,
+        val_loader,
+        device=device,
+    )
+    accuracy_metrics = compute_accuracy_metrics(
+        predictions["q_true"],
+        predictions["q_hat"],
+    )
+    physical_metrics = compute_physical_violation_metrics(predictions)
+
+    finite_violation_rates = [
+        value for value in physical_metrics.values() if pd.notna(value)
+    ]
+    if finite_violation_rates:
+        physical_metrics["violation_rate"] = float(max(finite_violation_rates))
+    else:
+        physical_metrics["violation_rate"] = float("nan")
+
+    uq_metrics = {}
+    if n_mc >= 2:
+        mc_predictions = collect_mc_dropout_predictions(
+            model,
+            val_loader,
+            device=device,
+            n_mc=n_mc,
+        )
+        uq_metrics = compute_uq_metrics(
+            predictions["q_true"],
+            mc_predictions["q_hat_mc"],
+            mc_predictions.get("sigma_ale_mc"),
+        )
+
+    return {
+        "accuracy": accuracy_metrics,
+        "physical": physical_metrics,
+        "uq": uq_metrics,
+    }
+
+
 # Train V1 across many epochs with validation tracking and early stopping.
 def train_v1_model(
     model: SoftBaselinePINN,
@@ -416,6 +472,11 @@ def train_v1_model(
             temperature_center,
             temperature_scale,
         )
+        val_summary = summarize_validation_metrics(
+            model,
+            val_loader,
+            device=training_config.device,
+        )
 
         val_loss = val_metrics["total_loss"]
         improved = val_loss < best_val_loss
@@ -442,6 +503,17 @@ def train_v1_model(
         history_row.update(
             {f"val_{name}": value for name, value in val_metrics.items()}
         )
+        history_row.update(
+            {
+                "val_RMSE": val_summary["accuracy"]["RMSE"],
+                "val_MAE": val_summary["accuracy"]["MAE"],
+                "val_R2": val_summary["accuracy"]["R2"],
+                "val_neg_rate": val_summary["physical"]["neg_rate"],
+                "val_mono_rate": val_summary["physical"]["mono_rate"],
+                "val_sat_rate": val_summary["physical"]["sat_rate"],
+                "val_violation_rate": val_summary["physical"]["violation_rate"],
+            }
+        )
         history.append(history_row)
 
         if epochs_without_improvement >= training_config.patience:
@@ -455,7 +527,7 @@ def train_v1_model(
     return model, history
 
 
-# Train one V1 model per lambda_p value and summarize validation performance.
+# Train one V1 model per lambda_p value and select by validation RMSE.
 def run_lambda_sweep(
     train_loader,
     val_loader,
@@ -465,6 +537,7 @@ def run_lambda_sweep(
     model_config: Optional[V1ModelConfig] = None,
     training_config: Optional[TrainingConfig] = None,
     seed: int = 42,
+    sweep_n_mc: int = 20,
 ) -> tuple[list[dict[str, float]], dict[str, float]]:
     if not lambda_p_values:
         raise ValueError("lambda_p_values must contain at least one value.")
@@ -481,7 +554,7 @@ def run_lambda_sweep(
             lambda_p=float(lambda_p),
         )
 
-        _, history = train_v1_model(
+        model, history = train_v1_model(
             model,
             train_loader,
             val_loader,
@@ -492,11 +565,28 @@ def run_lambda_sweep(
 
         best_epoch = int(history[-1]["best_epoch"])
         best_row = history[best_epoch - 1]
+        val_summary = summarize_validation_metrics(
+            model,
+            val_loader,
+            device=current_training_config.device,
+            n_mc=sweep_n_mc,
+        )
+        val_accuracy = val_summary["accuracy"]
+        val_physical = val_summary["physical"]
+        val_uq = val_summary["uq"]
         results.append(
             {
                 "lambda_p": float(lambda_p),
                 "epochs_trained": float(len(history)),
                 "best_epoch": best_row["epoch"],
+                "selection_val_RMSE": val_accuracy["RMSE"],
+                "selection_val_MAE": val_accuracy["MAE"],
+                "selection_val_R2": val_accuracy["R2"],
+                "selection_val_neg_rate": val_physical["neg_rate"],
+                "selection_val_mono_rate": val_physical["mono_rate"],
+                "selection_val_sat_rate": val_physical["sat_rate"],
+                "selection_val_violation_rate": val_physical["violation_rate"],
+                "selection_val_ECE": val_uq.get("ECE", float("nan")),
                 "best_val_loss": best_row["val_total_loss"],
                 "best_val_data_loss": best_row["val_data_loss"],
                 "best_val_physics_loss": best_row["val_physics_loss"],
@@ -507,9 +597,115 @@ def run_lambda_sweep(
             }
         )
 
-    best_result = min(results, key=lambda row: row["best_val_loss"])
+    best_result = min(results, key=lambda row: row["selection_val_RMSE"])
 
     return results, best_result
+
+
+# Aggregate fold/seed sweep results and select lambda_p by mean validation RMSE.
+def aggregate_cv_lambda_results(
+    cv_results: list[dict[str, float]],
+) -> tuple[list[dict[str, float]], dict[str, float]]:
+    if not cv_results:
+        raise ValueError("cv_results must contain at least one result row.")
+
+    results_table = pd.DataFrame(cv_results)
+    summary_rows: list[dict[str, float]] = []
+    metrics_to_summarize = [
+        "selection_val_RMSE",
+        "selection_val_MAE",
+        "selection_val_R2",
+        "selection_val_neg_rate",
+        "selection_val_mono_rate",
+        "selection_val_sat_rate",
+        "selection_val_violation_rate",
+        "selection_val_ECE",
+        "best_val_loss",
+        "best_val_data_loss",
+        "best_val_physics_loss",
+        "epochs_trained",
+    ]
+
+    for lambda_p, group in results_table.groupby("lambda_p", sort=True):
+        summary_row = {
+            "lambda_p": float(lambda_p),
+            "n_runs": float(len(group)),
+        }
+
+        for metric_name in metrics_to_summarize:
+            summary_row[f"{metric_name}_mean"] = float(group[metric_name].mean())
+            if len(group) > 1:
+                summary_row[f"{metric_name}_std"] = float(group[metric_name].std())
+            else:
+                summary_row[f"{metric_name}_std"] = 0.0
+
+        summary_rows.append(summary_row)
+
+    best_summary = min(
+        summary_rows,
+        key=lambda row: row["selection_val_RMSE_mean"],
+    )
+
+    return summary_rows, best_summary
+
+
+# Run the blueprint lambda_p sweep across CV folds and random seeds.
+def run_cv_lambda_sweep(
+    pipeline: dict,
+    lambda_p_values: tuple[float, ...] = DEFAULT_LAMBDA_P_VALUES,
+    seeds: tuple[int, ...] = DEFAULT_RANDOM_SEEDS,
+    model_config: Optional[V1ModelConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    max_folds: Optional[int] = None,
+    sweep_n_mc: int = 20,
+) -> tuple[list[dict[str, float]], list[dict[str, float]], dict[str, float]]:
+    if not seeds:
+        raise ValueError("seeds must contain at least one random seed.")
+
+    if "cv_folds" not in pipeline:
+        raise KeyError("Pipeline does not contain cv_folds.")
+
+    cv_folds = pipeline["cv_folds"]
+    if max_folds is not None:
+        cv_folds = cv_folds[:max_folds]
+
+    if not cv_folds:
+        raise ValueError("No CV folds are available for the sweep.")
+
+    resolved_model_config = model_config or V1ModelConfig()
+    resolved_training_config = training_config or TrainingConfig()
+    cv_results: list[dict[str, float]] = []
+
+    for seed in seeds:
+        for fold in cv_folds:
+            scaler = fold["scaler"]
+            temperature_idx = resolved_model_config.temperature_feature_idx
+            temperature_center = float(scaler.center_[temperature_idx])
+            temperature_scale = float(scaler.scale_[temperature_idx])
+            fold_results, _ = run_lambda_sweep(
+                train_loader=fold["train_loader"],
+                val_loader=fold["val_loader"],
+                temperature_center=temperature_center,
+                temperature_scale=temperature_scale,
+                lambda_p_values=lambda_p_values,
+                model_config=resolved_model_config,
+                training_config=resolved_training_config,
+                seed=seed,
+                sweep_n_mc=sweep_n_mc,
+            )
+
+            for result in fold_results:
+                cv_results.append(
+                    {
+                        "seed": float(seed),
+                        "fold": float(fold["fold"]),
+                        **result,
+                    }
+                )
+
+    cv_summary, best_summary = aggregate_cv_lambda_results(cv_results)
+
+    return cv_results, cv_summary, best_summary
 
 
 # Build the data pipeline and run the V1 soft-baseline lambda_p experiment.
@@ -519,6 +715,7 @@ def run_soft_baseline_exp(
     model_config: Optional[V1ModelConfig] = None,
     training_config: Optional[TrainingConfig] = None,
     seed: int = 42,
+    sweep_n_mc: int = 20,
     verbose: bool = True,
 ) -> tuple[list[dict[str, float]], dict[str, float]]:
     resolved_model_config = model_config or V1ModelConfig()
@@ -538,26 +735,88 @@ def run_soft_baseline_exp(
         model_config=resolved_model_config,
         training_config=resolved_training_config,
         seed=seed,
+        sweep_n_mc=sweep_n_mc,
     )
 
     if verbose:
         print("lambda_p sweep results")
-        print("lambda_p | epochs | best_epoch | val_total | val_data | val_physics")
+        print("lambda_p | epochs | best_epoch | val_RMSE | violation | ECE | val_total")
         for row in results:
             print(
                 f"{row['lambda_p']:>8.3g} | "
                 f"{row['epochs_trained']:>6.0f} | "
                 f"{row['best_epoch']:>10.0f} | "
-                f"{row['best_val_loss']:>9.4g} | "
-                f"{row['best_val_data_loss']:>8.4g} | "
-                f"{row['best_val_physics_loss']:>11.4g}"
+                f"{row['selection_val_RMSE']:>8.4g} | "
+                f"{row['selection_val_violation_rate']:>9.4g} | "
+                f"{row['selection_val_ECE']:>3.4g} | "
+                f"{row['best_val_loss']:>9.4g}"
             )
 
         print()
         print(f"Best lambda_p: {best_result['lambda_p']}")
-        print(f"Best validation loss: {best_result['best_val_loss']:.6g}")
+        print(f"Best validation RMSE: {best_result['selection_val_RMSE']:.6g}")
 
     return results, best_result
+
+
+# Save the lambda_p sensitivity trade-off plot requested by the blueprint.
+def save_lambda_tradeoff_plot(
+    cv_summary: list[dict[str, float]],
+    output_path: Path,
+) -> Path:
+    import os
+
+    summary_table = pd.DataFrame(cv_summary).sort_values("lambda_p")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(output_path.parent / ".matplotlib"))
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    x_positions = list(range(len(summary_table)))
+    x_labels = [f"{value:g}" for value in summary_table["lambda_p"]]
+
+    fig, left_axis = plt.subplots(figsize=(8, 4.5))
+    right_axis = left_axis.twinx()
+
+    left_axis.plot(
+        x_positions,
+        summary_table["selection_val_RMSE_mean"],
+        marker="o",
+        color="tab:blue",
+        label="Validation RMSE",
+    )
+    right_axis.plot(
+        x_positions,
+        summary_table["selection_val_violation_rate_mean"],
+        marker="s",
+        color="tab:red",
+        label="Violation rate",
+    )
+
+    left_axis.set_xlabel("lambda_p")
+    left_axis.set_ylabel("Validation RMSE", color="tab:blue")
+    right_axis.set_ylabel("Physical violation rate", color="tab:red")
+    left_axis.set_xticks(x_positions)
+    left_axis.set_xticklabels(x_labels)
+    left_axis.grid(True, axis="y", alpha=0.3)
+
+    handles_left, labels_left = left_axis.get_legend_handles_labels()
+    handles_right, labels_right = right_axis.get_legend_handles_labels()
+    left_axis.legend(
+        handles_left + handles_right,
+        labels_left + labels_right,
+        loc="best",
+    )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+    return output_path
 
 
 # Train the selected soft baseline and evaluate it on T1/T2/T3 with the harness.
@@ -611,6 +870,7 @@ def evaluate_best_soft_baseline(
 def run_and_save_soft_baseline_exp(
     batch_size: int = 64,
     lambda_p_values: tuple[float, ...] = DEFAULT_LAMBDA_P_VALUES,
+    seeds: tuple[int, ...] = DEFAULT_RANDOM_SEEDS,
     model_config: Optional[V1ModelConfig] = None,
     training_config: Optional[TrainingConfig] = None,
     tier_names: tuple[str, ...] = ("T1", "T2", "T3"),
@@ -618,7 +878,9 @@ def run_and_save_soft_baseline_exp(
     checkpoint_dir=Path("checkpoints"),
     n_bootstrap: int = 100,
     n_mc: int = 100,
+    sweep_n_mc: int = 20,
     seed: int = 42,
+    max_folds: Optional[int] = None,
     verbose: bool = True,
 ) -> dict[str, object]:
     from unified_eval_harness import save_results_csv
@@ -626,28 +888,27 @@ def run_and_save_soft_baseline_exp(
     resolved_model_config = model_config or V1ModelConfig()
     resolved_training_config = training_config or TrainingConfig()
     pipeline = build_data_pipeline(batch_size=batch_size)
-    scaler = pipeline["scaler"]
-    temperature_idx = resolved_model_config.temperature_feature_idx
-    temperature_center = float(scaler.center_[temperature_idx])
-    temperature_scale = float(scaler.scale_[temperature_idx])
 
     results_dir = Path(results_dir)
     checkpoint_dir = Path(checkpoint_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    lambda_results, best_result = run_lambda_sweep(
-        train_loader=pipeline["train_loader"],
-        val_loader=pipeline["val_loader"],
-        temperature_center=temperature_center,
-        temperature_scale=temperature_scale,
+    cv_results, cv_summary, best_result = run_cv_lambda_sweep(
+        pipeline=pipeline,
         lambda_p_values=lambda_p_values,
+        seeds=seeds,
         model_config=resolved_model_config,
         training_config=resolved_training_config,
-        seed=seed,
+        max_folds=max_folds,
+        sweep_n_mc=sweep_n_mc,
     )
-    lambda_sweep_path = results_dir / "soft_baseline_lambda_sweep.csv"
-    pd.DataFrame(lambda_results).to_csv(lambda_sweep_path, index=False)
+    cv_sweep_path = results_dir / "soft_baseline_cv_lambda_sweep.csv"
+    cv_summary_path = results_dir / "soft_baseline_cv_lambda_summary.csv"
+    tradeoff_plot_path = results_dir / "soft_baseline_lambda_tradeoff.png"
+    pd.DataFrame(cv_results).to_csv(cv_sweep_path, index=False)
+    pd.DataFrame(cv_summary).to_csv(cv_summary_path, index=False)
+    save_lambda_tradeoff_plot(cv_summary, tradeoff_plot_path)
 
     model, history, evaluation_results = evaluate_best_soft_baseline(
         pipeline,
@@ -686,26 +947,34 @@ def run_and_save_soft_baseline_exp(
             "feature_names": pipeline["feature_names"],
             "t2_rank": pipeline["t2_rank"],
             "lambda_p_values": list(lambda_p_values),
+            "seeds": list(seeds),
+            "max_folds": max_folds,
+            "sweep_n_mc": sweep_n_mc,
             "seed": seed,
         },
         checkpoint_path,
     )
 
     if verbose:
-        print(f"Saved lambda sweep: {lambda_sweep_path}")
+        print(f"Saved CV lambda sweep: {cv_sweep_path}")
+        print(f"Saved CV lambda summary: {cv_summary_path}")
+        print(f"Saved lambda trade-off plot: {tradeoff_plot_path}")
         print(f"Saved training history: {history_path}")
         print(f"Saved evaluation metrics: {evaluation_metrics_path}")
         print(f"Saved checkpoint: {checkpoint_path}")
 
     return {
         "model": model,
-        "lambda_results": lambda_results,
+        "cv_results": cv_results,
+        "cv_summary": cv_summary,
         "best_result": best_result,
         "history": history,
         "evaluation_results": evaluation_results,
         "evaluation_table": evaluation_table,
         "paths": {
-            "lambda_sweep": lambda_sweep_path,
+            "cv_lambda_sweep": cv_sweep_path,
+            "cv_lambda_summary": cv_summary_path,
+            "lambda_tradeoff_plot": tradeoff_plot_path,
             "training_history": history_path,
             "evaluation_metrics": evaluation_metrics_path,
             "checkpoint": checkpoint_path,
