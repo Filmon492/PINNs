@@ -599,7 +599,7 @@ def evaluate_hard_monotonicity_model(
         device=resolved_training_config.device,
         n_bootstrap=n_bootstrap,
         n_mc=n_mc,
-        hard_constraints=(),
+        hard_constraints=("monotonicity",),
         random_state=seed,
     )
 
