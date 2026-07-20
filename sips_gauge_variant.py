@@ -648,6 +648,97 @@ def compute_parameter_analysis(
     return summary
 
 
+def _sample_rows(array, max_rows: int, random_state: int):
+    if len(array) <= max_rows:
+        return array
+
+    import numpy as np
+
+    rng = np.random.default_rng(random_state)
+    indices = rng.choice(len(array), size=max_rows, replace=False)
+
+    return array[indices]
+
+
+# Compute compact SHAP summaries for q_max, K, and n parameter heads.
+def compute_parameter_shap_summary(
+    model: SipsGaugePINN,
+    pipeline: dict,
+    split_name: str = "validation",
+    max_background: int = 25,
+    max_explain: int = 25,
+    nsamples: int = 100,
+    device: str = "cpu",
+    random_state: int = 42,
+) -> pd.DataFrame:
+    import warnings
+
+    import numpy as np
+    import shap
+    from sklearn.exceptions import ConvergenceWarning
+
+    suffix = _split_suffix(split_name)
+    arrays = pipeline["arrays"]
+    background = arrays["X_train"][:, model.comp_feature_indices]
+    explain = arrays[f"X_{suffix}"][:, model.comp_feature_indices]
+    background = _sample_rows(background, max_background, random_state)
+    explain = _sample_rows(explain, max_explain, random_state + 1)
+    comp_feature_names = [
+        pipeline["feature_names"][idx] for idx in model.comp_feature_indices
+    ]
+
+    model = model.to(device)
+    was_training = model.training
+    model.eval()
+    rows = []
+
+    try:
+        for parameter_name in ("q_max", "K", "n"):
+
+            def predict_parameter(x_comp_np, parameter_name=parameter_name):
+                x_comp = torch.tensor(
+                    x_comp_np,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                with torch.inference_mode():
+                    output = model.predict_parameters_from_comp(x_comp)
+
+                return output[parameter_name].detach().cpu().numpy().reshape(-1)
+
+            explainer = shap.KernelExplainer(predict_parameter, background)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                try:
+                    shap_values = explainer.shap_values(
+                        explain,
+                        nsamples=nsamples,
+                        silent=True,
+                    )
+                except TypeError:
+                    shap_values = explainer.shap_values(explain, nsamples=nsamples)
+
+            if isinstance(shap_values, list):
+                shap_values = shap_values[0]
+
+            mean_abs_values = np.abs(np.asarray(shap_values)).mean(axis=0)
+            for feature_name, mean_abs_shap in zip(
+                comp_feature_names,
+                mean_abs_values,
+            ):
+                rows.append(
+                    {
+                        "parameter": parameter_name,
+                        "feature": feature_name,
+                        "mean_abs_shap": float(mean_abs_shap),
+                    }
+                )
+    finally:
+        model.train(was_training)
+
+    return pd.DataFrame(rows)
+
+
 # Train V5 and evaluate it on T1/T2/T3 with the unified harness.
 def evaluate_sips_gauge_model(
     pipeline: dict,
@@ -715,6 +806,10 @@ def run_and_save_sips_gauge_exp(
     verify_n_comp: int = 500,
     verify_n_P: int = 50,
     strict_parameter_ranges: bool = False,
+    run_shap: bool = True,
+    shap_max_background: int = 25,
+    shap_max_explain: int = 25,
+    shap_nsamples: int = 100,
     verbose: bool = True,
 ) -> dict[str, object]:
     from unified_eval_harness import save_results_csv
@@ -764,6 +859,21 @@ def run_and_save_sips_gauge_exp(
     parameter_analysis_path = results_dir / "sips_gauge_parameter_analysis.csv"
     parameter_analysis.to_csv(parameter_analysis_path, index=False)
 
+    shap_summary = None
+    shap_summary_path = results_dir / "sips_gauge_shap_summary.csv"
+    if run_shap:
+        shap_summary = compute_parameter_shap_summary(
+            model,
+            pipeline,
+            split_name="validation",
+            max_background=shap_max_background,
+            max_explain=shap_max_explain,
+            nsamples=shap_nsamples,
+            device=resolved_training_config.device,
+            random_state=seed,
+        )
+        shap_summary.to_csv(shap_summary_path, index=False)
+
     checkpoint_path = checkpoint_dir / "sips_gauge_v5.pt"
     torch.save(
         {
@@ -790,6 +900,8 @@ def run_and_save_sips_gauge_exp(
         print(f"Saved V5 structural verification: {verification_path}")
         print(f"Saved V5 evaluation metrics: {evaluation_metrics_path}")
         print(f"Saved V5 parameter analysis: {parameter_analysis_path}")
+        if shap_summary is not None:
+            print(f"Saved V5 SHAP summary: {shap_summary_path}")
         print(f"Saved V5 checkpoint: {checkpoint_path}")
 
     results_dict = {"V5": evaluation_results}
@@ -800,6 +912,8 @@ def run_and_save_sips_gauge_exp(
         "parameter_analysis": parameter_analysis_path,
         "checkpoint": checkpoint_path,
     }
+    if shap_summary is not None:
+        paths["shap_summary"] = shap_summary_path
 
     return {
         "model": model,
@@ -809,6 +923,7 @@ def run_and_save_sips_gauge_exp(
         "evaluation_table": evaluation_table,
         "structural_verification": structural_verification,
         "parameter_analysis": parameter_analysis,
+        "shap_summary": shap_summary,
         "paths": paths,
     }
 
