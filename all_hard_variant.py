@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from arrhenius_variant import ArrheniusConfig, ArrheniusHead, verify_arrhenius_structure
 from data_pipeline import build_data_pipeline
 from sips_gauge_variant import verify_sips_structure
-from soft_baseline import ResidualBlock
+from soft_baseline import ResidualBlock, TrainingConfig, heteroscedastic_nll_loss
 
 
 @dataclass
@@ -201,6 +201,97 @@ V2AllHardPINN = AllHardSipsArrheniusPINN
 V8HardSipsArrheniusPINN = AllHardSipsArrheniusPINN
 
 
+# Compute the all-hard objective; physics constraints are enforced by architecture.
+def compute_all_hard_losses(
+    output: dict[str, torch.Tensor],
+    y_log: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    q_true = torch.exp(y_log)
+    data_loss = heteroscedastic_nll_loss(
+        q_true=q_true,
+        q_hat=output["q_hat"],
+        log_sigma2=output["log_sigma2"],
+    )
+
+    return {
+        "total_loss": data_loss,
+        "data_loss": data_loss,
+    }
+
+
+# Run one all-hard training pass over all batches.
+def train_one_epoch_all_hard(
+    model: AllHardSipsArrheniusPINN,
+    train_loader,
+    optimizer: torch.optim.Optimizer,
+    training_config: TrainingConfig,
+) -> dict[str, float]:
+    model.train()
+    device = torch.device(training_config.device)
+    loss_totals: dict[str, float] = {}
+    n_batches = 0
+
+    for batch in train_loader:
+        x = batch["x"].to(device)
+        y_log = batch["y"].to(device)
+        raw_pressure = batch["raw_pressure"].to(device)
+
+        output = model(x, raw_pressure)
+        losses = compute_all_hard_losses(output, y_log)
+
+        optimizer.zero_grad()
+        losses["total_loss"].backward()
+
+        if training_config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=training_config.gradient_clip_norm,
+            )
+
+        optimizer.step()
+
+        for name, value in losses.items():
+            loss_totals[name] = loss_totals.get(name, 0.0) + float(value.detach())
+
+        n_batches += 1
+
+    if n_batches == 0:
+        raise ValueError("train_loader produced no batches.")
+
+    return {name: value / n_batches for name, value in loss_totals.items()}
+
+
+# Evaluate all-hard validation batches without updating model parameters.
+def validate_one_epoch_all_hard(
+    model: AllHardSipsArrheniusPINN,
+    val_loader,
+    training_config: TrainingConfig,
+) -> dict[str, float]:
+    model.eval()
+    device = torch.device(training_config.device)
+    loss_totals: dict[str, float] = {}
+    n_batches = 0
+
+    with torch.inference_mode():
+        for batch in val_loader:
+            x = batch["x"].to(device)
+            y_log = batch["y"].to(device)
+            raw_pressure = batch["raw_pressure"].to(device)
+
+            output = model(x, raw_pressure)
+            losses = compute_all_hard_losses(output, y_log)
+
+            for name, value in losses.items():
+                loss_totals[name] = loss_totals.get(name, 0.0) + float(value.detach())
+
+            n_batches += 1
+
+    if n_batches == 0:
+        raise ValueError("val_loader produced no batches.")
+
+    return {name: value / n_batches for name, value in loss_totals.items()}
+
+
 # Quick architecture check for the shared V2/V8 hard constraints.
 def smoke_test_all_hard_variant() -> None:
     pipeline = build_data_pipeline(batch_size=8)
@@ -211,8 +302,26 @@ def smoke_test_all_hard_variant() -> None:
         temperature_scale=float(pipeline["scaler"].scale_[temperature_idx]),
     )
     model = AllHardSipsArrheniusPINN(config)
+    training_config = TrainingConfig(lambda_p=0.0, max_epochs=1, patience=1)
     batch = next(iter(pipeline["train_loader"]))
     output = model(batch["x"], batch["raw_pressure"])
+    losses = compute_all_hard_losses(output, batch["y"])
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=training_config.lr,
+        weight_decay=training_config.weight_decay,
+    )
+    train_metrics = train_one_epoch_all_hard(
+        model,
+        pipeline["train_loader"],
+        optimizer,
+        training_config,
+    )
+    val_metrics = validate_one_epoch_all_hard(
+        model,
+        pipeline["val_loader"],
+        training_config,
+    )
     sips_verification = verify_sips_structure(
         model,
         pipeline["train_loader"],
@@ -234,6 +343,10 @@ def smoke_test_all_hard_variant() -> None:
     print("K0:", output["K0"].shape)
     print("n:", output["n"].shape)
     print("delta_H:", output["delta_H"].shape)
+    print("total_loss:", float(losses["total_loss"].detach()))
+    print("data_loss:", float(losses["data_loss"].detach()))
+    print("train_total_loss:", train_metrics["total_loss"])
+    print("val_total_loss:", val_metrics["total_loss"])
     print("min q_hat:", float(output["q_hat"].min().detach()))
     print(
         "min qmax_minus_q:", float((output["q_max"] - output["q_hat"]).min().detach())
