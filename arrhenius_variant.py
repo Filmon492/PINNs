@@ -1,12 +1,23 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import pandas as pd
 import torch
 from torch import nn
 from torch.nn import functional as F
 
 from data_pipeline import build_data_pipeline
-from soft_baseline import R_GAS, ResidualBlock, V1ModelConfig
+from soft_baseline import (
+    R_GAS,
+    ResidualBlock,
+    TrainingConfig,
+    V1ModelConfig,
+    bounds_loss,
+    heteroscedastic_nll_loss,
+    monotonicity_loss,
+    sips_loss,
+    summarize_validation_metrics,
+)
 
 
 @dataclass
@@ -136,6 +147,371 @@ class ArrheniusPINN(nn.Module):
         }
 
 
+# Combine data loss with V6 soft physics penalties, excluding van't Hoff loss.
+def compute_v6_losses(
+    output: dict[str, torch.Tensor],
+    y_log: torch.Tensor,
+    raw_pressure: torch.Tensor,
+    lambda_p: float,
+    x: torch.Tensor,
+    config: ArrheniusConfig,
+) -> dict[str, torch.Tensor]:
+    q_true = torch.exp(y_log)
+    data_loss = heteroscedastic_nll_loss(
+        q_true=q_true,
+        q_hat=output["q_hat"],
+        log_sigma2=output["log_sigma2"],
+    )
+    sips_penalty = sips_loss(output, raw_pressure)
+    bounds_penalty = bounds_loss(output)
+    mono_penalty = monotonicity_loss(
+        output,
+        x,
+        pressure_feature_idx=config.pressure_feature_idx,
+    )
+    physics_loss = sips_penalty + bounds_penalty + mono_penalty
+    total_loss = data_loss + lambda_p * physics_loss
+
+    return {
+        "total_loss": total_loss,
+        "data_loss": data_loss,
+        "physics_loss": physics_loss,
+        "sips_loss": sips_penalty,
+        "bounds_loss": bounds_penalty,
+        "mono_loss": mono_penalty,
+    }
+
+
+# Verify the Arrhenius identity and enthalpy range on training samples.
+def verify_arrhenius_structure(
+    model: ArrheniusPINN,
+    train_loader,
+    n_samples: int = 100,
+    tolerance: float = 1e-4,
+    expected_dH_range_kJmol: tuple[float, float] = (-60.0, -5.0),
+    required_fraction_in_range: float = 0.95,
+    device: str = "cpu",
+    random_state: int = 42,
+) -> dict[str, float]:
+    if n_samples <= 0:
+        raise ValueError("n_samples must be positive.")
+
+    device_obj = torch.device(device)
+    original_dtype = next(model.parameters()).dtype
+    verification_dtype = torch.float64
+    model = model.to(device_obj, dtype=verification_dtype)
+    was_training = model.training
+    model.eval()
+
+    x_batches = []
+    for batch in train_loader:
+        x_batches.append(batch["x"])
+
+    if not x_batches:
+        raise ValueError("train_loader produced no batches.")
+
+    x_all = torch.cat(x_batches, dim=0)
+    generator = torch.Generator()
+    generator.manual_seed(random_state)
+    n_selected = min(n_samples, len(x_all))
+    selected_indices = torch.randperm(len(x_all), generator=generator)[:n_selected]
+
+    x = x_all[selected_indices].to(device_obj, dtype=verification_dtype)
+
+    try:
+        h = model.encoder(x).detach()
+        raw_temperature = model.raw_temperature_from_scaled_x(x).detach()
+        inverse_temperature = (1.0 / raw_temperature).detach().clone()
+        inverse_temperature.requires_grad_(True)
+        varied_temperature = 1.0 / inverse_temperature
+        output = model.arrhenius_head(h, varied_temperature)
+        ln_K = torch.log(torch.clamp(output["K"], min=1e-8))
+        d_lnK_d_invT = torch.autograd.grad(
+            ln_K.sum(),
+            inverse_temperature,
+            create_graph=False,
+            retain_graph=False,
+        )[0]
+        expected_slope = -output["delta_H"] / R_GAS
+        max_identity_error = float(
+            torch.max(torch.abs(d_lnK_d_invT - expected_slope)).detach().cpu().item()
+        )
+        delta_H_kJmol = output["delta_H_kJmol"].detach().cpu()
+    finally:
+        model.train(was_training)
+        model.to(dtype=original_dtype)
+
+    lower, upper = expected_dH_range_kJmol
+    in_range = (delta_H_kJmol >= lower) & (delta_H_kJmol <= upper)
+    fraction_in_range = float(in_range.float().mean().item())
+    metrics = {
+        "n_samples": float(n_selected),
+        "max_arrhenius_identity_error": max_identity_error,
+        "delta_H_kJmol_mean": float(delta_H_kJmol.mean().item()),
+        "delta_H_kJmol_std": float(delta_H_kJmol.std(unbiased=False).item()),
+        "delta_H_kJmol_min": float(delta_H_kJmol.min().item()),
+        "delta_H_kJmol_max": float(delta_H_kJmol.max().item()),
+        "fraction_delta_H_in_expected_range": fraction_in_range,
+    }
+
+    if max_identity_error > tolerance:
+        raise ValueError(
+            "Arrhenius identity check failed: "
+            f"max error {max_identity_error:.6g} exceeds {tolerance:.6g}."
+        )
+
+    if fraction_in_range < required_fraction_in_range:
+        raise ValueError(
+            "Arrhenius enthalpy range check failed: "
+            f"{fraction_in_range:.3f} in range {expected_dH_range_kJmol}, "
+            f"required {required_fraction_in_range:.3f}."
+        )
+
+    return metrics
+
+
+# Summarize predicted enthalpy by inferred coal rank.
+def compute_enthalpy_by_rank(
+    model: ArrheniusPINN,
+    pipeline: dict,
+    split_names: tuple[str, ...] = ("train", "validation", "T1", "T2", "T3"),
+    device: str = "cpu",
+) -> pd.DataFrame:
+    suffixes = {
+        "train": "train",
+        "validation": "val",
+        "val": "val",
+        "T1": "T1",
+        "T2": "T2",
+        "T3": "T3",
+    }
+    rows = []
+    model = model.to(device)
+    was_training = model.training
+    model.eval()
+
+    try:
+        with torch.inference_mode():
+            for split_name in split_names:
+                suffix = suffixes[split_name]
+                split_key = "validation" if split_name == "val" else split_name
+                split_df = pipeline["splits"][split_key].reset_index(drop=True)
+                x = torch.tensor(
+                    pipeline["arrays"][f"X_{suffix}"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+                raw_pressure = torch.tensor(
+                    pipeline["arrays"][f"raw_pressure_{suffix}"],
+                    dtype=torch.float32,
+                    device=device,
+                )
+                output = model(x, raw_pressure)
+                delta_H_values = output["delta_H_kJmol"].cpu().numpy().reshape(-1)
+
+                for coal_rank, delta_H_kJmol in zip(
+                    split_df["coal_rank_inferred"],
+                    delta_H_values,
+                ):
+                    rows.append(
+                        {
+                            "split": split_key,
+                            "coal_rank": coal_rank,
+                            "delta_H_kJmol": float(delta_H_kJmol),
+                        }
+                    )
+    finally:
+        model.train(was_training)
+
+    enthalpy_table = pd.DataFrame(rows)
+
+    return (
+        enthalpy_table.groupby(["split", "coal_rank"], sort=True)
+        .agg(
+            n_samples=("delta_H_kJmol", "size"),
+            delta_H_kJmol_mean=("delta_H_kJmol", "mean"),
+            delta_H_kJmol_std=("delta_H_kJmol", "std"),
+            delta_H_kJmol_min=("delta_H_kJmol", "min"),
+            delta_H_kJmol_max=("delta_H_kJmol", "max"),
+        )
+        .reset_index()
+    )
+
+
+# Run one V6 training pass over all batches.
+def train_one_epoch_v6(
+    model: ArrheniusPINN,
+    train_loader,
+    optimizer: torch.optim.Optimizer,
+    training_config: TrainingConfig,
+) -> dict[str, float]:
+    model.train()
+    device = torch.device(training_config.device)
+    loss_totals: dict[str, float] = {}
+    n_batches = 0
+
+    for batch in train_loader:
+        x = batch["x"].to(device).detach().clone().requires_grad_(True)
+        y_log = batch["y"].to(device)
+        raw_pressure = batch["raw_pressure"].to(device)
+
+        output = model(x, raw_pressure)
+        losses = compute_v6_losses(
+            output,
+            y_log=y_log,
+            raw_pressure=raw_pressure,
+            lambda_p=training_config.lambda_p,
+            x=x,
+            config=model.config,
+        )
+
+        optimizer.zero_grad()
+        losses["total_loss"].backward()
+
+        if training_config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=training_config.gradient_clip_norm,
+            )
+
+        optimizer.step()
+
+        for name, value in losses.items():
+            loss_totals[name] = loss_totals.get(name, 0.0) + float(value.detach())
+
+        n_batches += 1
+
+    if n_batches == 0:
+        raise ValueError("train_loader produced no batches.")
+
+    return {name: value / n_batches for name, value in loss_totals.items()}
+
+
+# Evaluate V6 on validation batches without updating model parameters.
+def validate_one_epoch_v6(
+    model: ArrheniusPINN,
+    val_loader,
+    training_config: TrainingConfig,
+) -> dict[str, float]:
+    model.eval()
+    device = torch.device(training_config.device)
+    loss_totals: dict[str, float] = {}
+    n_batches = 0
+
+    for batch in val_loader:
+        x = batch["x"].to(device).detach().clone().requires_grad_(True)
+        y_log = batch["y"].to(device)
+        raw_pressure = batch["raw_pressure"].to(device)
+
+        output = model(x, raw_pressure)
+        losses = compute_v6_losses(
+            output,
+            y_log=y_log,
+            raw_pressure=raw_pressure,
+            lambda_p=training_config.lambda_p,
+            x=x,
+            config=model.config,
+        )
+
+        for name, value in losses.items():
+            loss_totals[name] = loss_totals.get(name, 0.0) + float(value.detach())
+
+        n_batches += 1
+
+    if n_batches == 0:
+        raise ValueError("val_loader produced no batches.")
+
+    return {name: value / n_batches for name, value in loss_totals.items()}
+
+
+# Train V6 across many epochs with validation tracking and early stopping.
+def train_v6_model(
+    model: ArrheniusPINN,
+    train_loader,
+    val_loader,
+    training_config: TrainingConfig,
+) -> tuple[ArrheniusPINN, list[dict[str, float]]]:
+    device = torch.device(training_config.device)
+    model = model.to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=training_config.lr,
+        weight_decay=training_config.weight_decay,
+    )
+
+    best_val_loss = float("inf")
+    best_epoch = 0
+    best_state: dict[str, torch.Tensor] | None = None
+    epochs_without_improvement = 0
+    history: list[dict[str, float]] = []
+
+    for epoch in range(1, training_config.max_epochs + 1):
+        train_metrics = train_one_epoch_v6(
+            model,
+            train_loader,
+            optimizer,
+            training_config,
+        )
+        val_metrics = validate_one_epoch_v6(
+            model,
+            val_loader,
+            training_config,
+        )
+        val_summary = summarize_validation_metrics(
+            model,
+            val_loader,
+            device=training_config.device,
+        )
+
+        val_loss = val_metrics["total_loss"]
+        improved = val_loss < best_val_loss
+
+        if improved:
+            best_val_loss = val_loss
+            best_epoch = epoch
+            epochs_without_improvement = 0
+            best_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
+        else:
+            epochs_without_improvement += 1
+
+        history_row = {
+            "epoch": float(epoch),
+            "best_epoch": float(best_epoch),
+            "best_val_loss": best_val_loss,
+        }
+        history_row.update(
+            {f"train_{name}": value for name, value in train_metrics.items()}
+        )
+        history_row.update(
+            {f"val_{name}": value for name, value in val_metrics.items()}
+        )
+        history_row.update(
+            {
+                "val_RMSE": val_summary["accuracy"]["RMSE"],
+                "val_MAE": val_summary["accuracy"]["MAE"],
+                "val_R2": val_summary["accuracy"]["R2"],
+                "val_neg_rate": val_summary["physical"]["neg_rate"],
+                "val_mono_rate": val_summary["physical"]["mono_rate"],
+                "val_sat_rate": val_summary["physical"]["sat_rate"],
+                "val_violation_rate": val_summary["physical"]["violation_rate"],
+            }
+        )
+        history.append(history_row)
+
+        if epochs_without_improvement >= training_config.patience:
+            break
+
+    if best_state is None:
+        raise ValueError("Training did not produce a valid V6 model state.")
+
+    model.load_state_dict(best_state)
+
+    return model, history
+
+
 # Quick architecture check using one batch from the data pipeline.
 def smoke_test_arrhenius_architecture() -> None:
     pipeline = build_data_pipeline(batch_size=8)
@@ -150,8 +526,35 @@ def smoke_test_arrhenius_architecture() -> None:
         ),
     )
     model = ArrheniusPINN(config)
-    output = model(batch["x"], batch["raw_pressure"])
-    raw_temperature_K = model.raw_temperature_from_scaled_x(batch["x"])
+    x = batch["x"].detach().clone().requires_grad_(True)
+    output = model(x, batch["raw_pressure"])
+    losses = compute_v6_losses(
+        output,
+        y_log=batch["y"],
+        raw_pressure=batch["raw_pressure"],
+        lambda_p=0.1,
+        x=x,
+        config=config,
+    )
+    raw_temperature_K = model.raw_temperature_from_scaled_x(x)
+    verification = verify_arrhenius_structure(
+        model,
+        pipeline["train_loader"],
+        n_samples=16,
+        required_fraction_in_range=0.0,
+    )
+    enthalpy_summary = compute_enthalpy_by_rank(
+        model,
+        pipeline,
+        split_names=("validation",),
+    )
+    training_config = TrainingConfig(lambda_p=0.1, max_epochs=1, patience=1)
+    trained_model, history = train_v6_model(
+        ArrheniusPINN(config),
+        pipeline["train_loader"],
+        pipeline["val_loader"],
+        training_config,
+    )
 
     print("x:", batch["x"].shape)
     print("raw_temperature_K:", raw_temperature_K.shape)
@@ -163,10 +566,21 @@ def smoke_test_arrhenius_architecture() -> None:
     print("delta_H_kJmol:", output["delta_H_kJmol"].shape)
     print(
         "temperature range:",
-        float(raw_temperature_K.min()),
-        float(raw_temperature_K.max()),
+        float(raw_temperature_K.min().detach()),
+        float(raw_temperature_K.max().detach()),
     )
     print("max delta_H_kJmol:", float(output["delta_H_kJmol"].max().detach()))
+    print("total_loss:", float(losses["total_loss"].detach()))
+    print("physics_loss:", float(losses["physics_loss"].detach()))
+    print("max identity error:", verification["max_arrhenius_identity_error"])
+    print("fraction dH in range:", verification["fraction_delta_H_in_expected_range"])
+    print("enthalpy rows:", len(enthalpy_summary))
+    print("epochs_trained:", len(history))
+    print("val_total_loss:", history[-1]["val_total_loss"])
+    print(
+        "trained parameters:",
+        sum(parameter.numel() for parameter in trained_model.parameters()),
+    )
 
 
 if __name__ == "__main__":
