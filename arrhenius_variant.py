@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -15,7 +16,6 @@ from soft_baseline import (
     bounds_loss,
     heteroscedastic_nll_loss,
     monotonicity_loss,
-    sips_loss,
     summarize_validation_metrics,
 )
 
@@ -147,6 +147,22 @@ class ArrheniusPINN(nn.Module):
         }
 
 
+# Stable Sips penalty for V6, avoiding overflow in (K P)^n.
+def stable_sips_loss(
+    output: dict[str, torch.Tensor],
+    raw_pressure: torch.Tensor,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    log_KP_n = output["n"] * (
+        torch.log(torch.clamp(output["K"], min=eps))
+        + torch.log(torch.clamp(raw_pressure, min=eps))
+    )
+    log_KP_n = torch.clamp(log_KP_n, min=-50.0, max=50.0)
+    q_sips = output["q_max"] * torch.sigmoid(log_KP_n)
+
+    return F.mse_loss(output["q_hat"], q_sips)
+
+
 # Combine data loss with V6 soft physics penalties, excluding van't Hoff loss.
 def compute_v6_losses(
     output: dict[str, torch.Tensor],
@@ -162,7 +178,7 @@ def compute_v6_losses(
         q_hat=output["q_hat"],
         log_sigma2=output["log_sigma2"],
     )
-    sips_penalty = sips_loss(output, raw_pressure)
+    sips_penalty = stable_sips_loss(output, raw_pressure)
     bounds_penalty = bounds_loss(output)
     mono_penalty = monotonicity_loss(
         output,
@@ -510,6 +526,179 @@ def train_v6_model(
     model.load_state_dict(best_state)
 
     return model, history
+
+
+# Train V6 and evaluate it on T1/T2/T3 with the unified harness.
+def evaluate_arrhenius_model(
+    pipeline: dict,
+    model_config: Optional[ArrheniusConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    tier_names: tuple[str, ...] = ("T1", "T2", "T3"),
+    n_bootstrap: int = 100,
+    n_mc: int = 100,
+    seed: int = 42,
+    verify_n_samples: int = 100,
+    required_fraction_in_range: float = 0.95,
+    strict_parameter_ranges: bool = False,
+) -> tuple[ArrheniusPINN, list[dict[str, float]], dict[str, dict], dict]:
+    from soft_baseline import set_torch_seed
+    from unified_eval_harness import evaluate_model
+
+    base_model_config = model_config or ArrheniusConfig()
+    scaler = pipeline["scaler"]
+    temperature_idx = base_model_config.temperature_feature_idx
+    resolved_model_config = ArrheniusConfig(
+        **{
+            **asdict(base_model_config),
+            "temperature_center": float(scaler.center_[temperature_idx]),
+            "temperature_scale": float(scaler.scale_[temperature_idx]),
+        }
+    )
+    resolved_training_config = training_config or TrainingConfig()
+
+    set_torch_seed(seed)
+    model = ArrheniusPINN(resolved_model_config)
+    model, history = train_v6_model(
+        model,
+        pipeline["train_loader"],
+        pipeline["val_loader"],
+        resolved_training_config,
+    )
+    arrhenius_verification = verify_arrhenius_structure(
+        model,
+        pipeline["train_loader"],
+        n_samples=verify_n_samples,
+        required_fraction_in_range=(
+            required_fraction_in_range if strict_parameter_ranges else 0.0
+        ),
+        device=resolved_training_config.device,
+        random_state=seed,
+    )
+    evaluation_results = evaluate_model(
+        model,
+        pipeline,
+        tier_names=tier_names,
+        device=resolved_training_config.device,
+        n_bootstrap=n_bootstrap,
+        n_mc=n_mc,
+        hard_constraints=(),
+        random_state=seed,
+    )
+
+    return model, history, evaluation_results, arrhenius_verification
+
+
+# Run the full V6 Arrhenius experiment and save reusable artifacts.
+def run_and_save_arrhenius_exp(
+    batch_size: int = 64,
+    model_config: Optional[ArrheniusConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    tier_names: tuple[str, ...] = ("T1", "T2", "T3"),
+    results_dir=Path("results"),
+    checkpoint_dir=Path("checkpoints"),
+    n_bootstrap: int = 100,
+    n_mc: int = 100,
+    seed: int = 42,
+    verify_n_samples: int = 100,
+    required_fraction_in_range: float = 0.95,
+    strict_parameter_ranges: bool = False,
+    verbose: bool = True,
+) -> dict[str, object]:
+    from unified_eval_harness import save_results_csv
+
+    resolved_training_config = training_config or TrainingConfig()
+    pipeline = build_data_pipeline(batch_size=batch_size)
+    results_dir = Path(results_dir)
+    checkpoint_dir = Path(checkpoint_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    model, history, evaluation_results, arrhenius_verification = (
+        evaluate_arrhenius_model(
+            pipeline,
+            model_config=model_config,
+            training_config=resolved_training_config,
+            tier_names=tier_names,
+            n_bootstrap=n_bootstrap,
+            n_mc=n_mc,
+            seed=seed,
+            verify_n_samples=verify_n_samples,
+            required_fraction_in_range=required_fraction_in_range,
+            strict_parameter_ranges=strict_parameter_ranges,
+        )
+    )
+
+    history_path = results_dir / "arrhenius_training_history.csv"
+    pd.DataFrame(history).to_csv(history_path, index=False)
+
+    verification_path = results_dir / "arrhenius_verification.csv"
+    pd.DataFrame([arrhenius_verification]).to_csv(verification_path, index=False)
+
+    evaluation_metrics_path = results_dir / "arrhenius_eval_metrics.csv"
+    evaluation_table = save_results_csv(
+        evaluation_results,
+        evaluation_metrics_path,
+        model_name="V6_arrhenius",
+    )
+
+    enthalpy_summary = compute_enthalpy_by_rank(
+        model,
+        pipeline,
+        device=resolved_training_config.device,
+    )
+    enthalpy_summary_path = results_dir / "arrhenius_enthalpy_by_rank.csv"
+    enthalpy_summary.to_csv(enthalpy_summary_path, index=False)
+
+    if strict_parameter_ranges:
+        if (
+            arrhenius_verification["fraction_delta_H_in_expected_range"]
+            < required_fraction_in_range
+        ):
+            raise ValueError("V6 enthalpy range verification failed.")
+
+    checkpoint_path = checkpoint_dir / "arrhenius_v6.pt"
+    torch.save(
+        {
+            "model_state_dict": {
+                name: value.detach().cpu() for name, value in model.state_dict().items()
+            },
+            "model_config": asdict(model.config),
+            "training_config": asdict(resolved_training_config),
+            "feature_names": pipeline["feature_names"],
+            "t2_rank": pipeline["t2_rank"],
+            "seed": seed,
+            "hard_constraints": ["van_t_hoff"],
+            "arrhenius_verification": arrhenius_verification,
+            "strict_parameter_ranges": strict_parameter_ranges,
+        },
+        checkpoint_path,
+    )
+
+    if verbose:
+        print(f"Saved V6 training history: {history_path}")
+        print(f"Saved V6 Arrhenius verification: {verification_path}")
+        print(f"Saved V6 evaluation metrics: {evaluation_metrics_path}")
+        print(f"Saved V6 enthalpy summary: {enthalpy_summary_path}")
+        print(f"Saved V6 checkpoint: {checkpoint_path}")
+
+    results_dict = {"V6": evaluation_results}
+
+    return {
+        "model": model,
+        "history": history,
+        "evaluation_results": evaluation_results,
+        "results_dict": results_dict,
+        "evaluation_table": evaluation_table,
+        "arrhenius_verification": arrhenius_verification,
+        "enthalpy_summary": enthalpy_summary,
+        "paths": {
+            "training_history": history_path,
+            "arrhenius_verification": verification_path,
+            "evaluation_metrics": evaluation_metrics_path,
+            "enthalpy_summary": enthalpy_summary_path,
+            "checkpoint": checkpoint_path,
+        },
+    }
 
 
 # Quick architecture check using one batch from the data pipeline.
