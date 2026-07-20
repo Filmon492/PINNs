@@ -55,16 +55,21 @@ class ArrheniusHead(nn.Module):
         delta_H = -self.config.enthalpy_scale_j_per_mol
         delta_H = delta_H * (F.softplus(self.head_delta_H(h)) + eps)
         exponent = -delta_H / (R_GAS * raw_temperature_K)
-        exponent = torch.clamp(
+        clamped_exponent = torch.clamp(
             exponent,
             min=self.config.min_arrhenius_exponent,
             max=self.config.max_arrhenius_exponent,
         )
-        K = K0 * torch.exp(exponent)
+        log_K0 = torch.log(torch.clamp(K0, min=eps))
+        log_K_unclamped = log_K0 + exponent
+        log_K = log_K0 + clamped_exponent
+        K = torch.exp(log_K)
 
         return {
             "K": K,
             "K0": K0,
+            "log_K": log_K,
+            "log_K_unclamped": log_K_unclamped,
             "delta_H": delta_H,
             "delta_H_kJmol": delta_H / 1000.0,
         }
@@ -141,6 +146,8 @@ class ArrheniusPINN(nn.Module):
             "q_max": q_max,
             "K": arrhenius_output["K"],
             "K0": arrhenius_output["K0"],
+            "log_K": arrhenius_output["log_K"],
+            "log_K_unclamped": arrhenius_output["log_K_unclamped"],
             "n": n,
             "delta_H": arrhenius_output["delta_H"],
             "delta_H_kJmol": arrhenius_output["delta_H_kJmol"],
@@ -241,7 +248,10 @@ def verify_arrhenius_structure(
         inverse_temperature.requires_grad_(True)
         varied_temperature = 1.0 / inverse_temperature
         output = model.arrhenius_head(h, varied_temperature)
-        ln_K = torch.log(torch.clamp(output["K"], min=1e-8))
+        ln_K = output.get(
+            "log_K_unclamped",
+            torch.log(torch.clamp(output["K"], min=1e-8)),
+        )
         d_lnK_d_invT = torch.autograd.grad(
             ln_K.sum(),
             inverse_temperature,
