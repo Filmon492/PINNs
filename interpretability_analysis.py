@@ -973,7 +973,7 @@ def run_and_save_step11_interpretability(
     checkpoint_dir=Path("checkpoints"),
     batch_size: int = 64,
     device: str = "cpu",
-    strict_qmax_correlation: bool = False,
+    strict_qmax_correlation: bool = True,
     run_v5_shap: bool = True,
     run_global_shap: bool = True,
     shap_max_background: int = 25,
