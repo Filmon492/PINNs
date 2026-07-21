@@ -4,12 +4,19 @@ This project investigates physics-informed neural networks (PINNs) for modeling 
 
 ## Project Status
 
-The project currently has two main parts implemented:
+The blueprint implementation is complete through Step 11:
 
 - Step 1: data pipeline with leakage-safe splits
 - Step 2: unified evaluation harness
-
-Step 3, the soft baseline model and lambda-p sensitivity sweep, is the next implementation stage.
+- Step 3: soft baseline model and lambda-p sensitivity sweep
+- Step 4: hard bounds variant
+- Step 5: hard monotonicity variant
+- Step 6: hard Sips gauge variant
+- Step 7: hard van't Hoff / Arrhenius variant
+- Step 8: joint hard-constraint variants
+- Step 9: ablation and interaction analysis
+- Step 10: uncertainty calibration
+- Step 11: interpretability and physical parameter validation
 
 ## Dataset
 
@@ -143,18 +150,21 @@ RUFF_CACHE_DIR=/private/tmp/ruff-cache .venv/bin/ruff check data_pipeline.py uni
 .venv/bin/black --check data_pipeline.py unified_eval_harness.py
 ```
 
-## Next Step
+## Results Layout
 
-The next planned implementation step is:
+Generated result files are organized by blueprint step:
 
 ```text
-Step 3: Soft baseline PINN + lambda_p sensitivity sweep
+results/step03_soft_baseline/
+results/step04_hard_bounds/
+results/step05_hard_monotonicity/
+results/step06_sips_gauge/
+results/step07_arrhenius/
+results/step08_joint_variants/
+results/step09_ablation/
+results/step10_uq_calibration/
+results/step11_interpretability/
 ```
 
-This will add:
-
-- V1 soft-constrained model architecture
-- data loss and physics penalty losses
-- training loop with early stopping
-- lambda-p sweep
-- connection to the unified evaluation harness
+The experiment scripts now save directly into these step-specific folders by
+default. Steps 1 and 2 do not currently generate standalone result files.

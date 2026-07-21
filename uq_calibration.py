@@ -8,6 +8,7 @@ from scipy.stats import norm, spearmanr
 
 from ablation_analysis import TIER_NAMES, VARIANT_SPECS, load_variant_model
 from data_pipeline import build_data_pipeline
+from result_paths import ensure_step_results_dir, find_step_result_file
 from unified_eval_harness import collect_mc_dropout_predictions, collect_predictions
 
 CONFIDENCE_LEVELS = (0.68, 0.90, 0.95, 0.99)
@@ -629,8 +630,7 @@ def save_step10_summary_outputs(
     metrics_table: pd.DataFrame,
     results_dir=Path("results"),
 ) -> dict[str, Path]:
-    results_dir = Path(results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = ensure_step_results_dir(results_dir, step=10)
 
     epistemic_table = make_epistemic_fraction_table(metrics_table)
     ece_shift_table = make_ece_shift_ratio_table(metrics_table)
@@ -655,11 +655,18 @@ def save_step10_summary_outputs(
 
 # Build Step 10 summary outputs from an existing metrics CSV.
 def run_and_save_step10_summaries(
-    metrics_path=Path("results/step10_uq_calibration_metrics.csv"),
+    metrics_path: Optional[Path] = None,
     results_dir=Path("results"),
     verbose: bool = True,
 ) -> dict[str, object]:
-    metrics_path = Path(metrics_path)
+    if metrics_path is None:
+        metrics_path = find_step_result_file(
+            "step10_uq_calibration_metrics.csv",
+            results_dir=results_dir,
+            step=10,
+        )
+    else:
+        metrics_path = Path(metrics_path)
 
     if not metrics_path.exists():
         raise FileNotFoundError(f"Missing Step 10 metrics table: {metrics_path}")
@@ -687,8 +694,7 @@ def run_and_save_uq_calibration(
     device: str = "cpu",
     verbose: bool = True,
 ) -> dict[str, object]:
-    results_dir = Path(results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = ensure_step_results_dir(results_dir, step=10)
     pipeline = build_data_pipeline(batch_size=batch_size)
     metrics_table, tau_table = evaluate_all_variants_uq(
         pipeline,

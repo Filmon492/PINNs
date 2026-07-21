@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from data_pipeline import build_data_pipeline
+from result_paths import ensure_step_results_dir
 
 R_GAS = 8.314
 DEFAULT_LAMBDA_P_VALUES = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0)
@@ -922,9 +923,8 @@ def run_and_save_soft_baseline_exp(
     resolved_training_config = training_config or TrainingConfig()
     pipeline = build_data_pipeline(batch_size=batch_size)
 
-    results_dir = Path(results_dir)
+    results_dir = ensure_step_results_dir(results_dir, step=3)
     checkpoint_dir = Path(checkpoint_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     cv_results, cv_summary, best_result = run_cv_lambda_sweep(

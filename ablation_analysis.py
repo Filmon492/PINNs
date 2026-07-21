@@ -13,6 +13,7 @@ from data_pipeline import build_data_pipeline
 from hard_bounds_variant import HardBoundsPINN
 from hard_monotonicity_variant import HardMonotonicityPINN
 from joint_variants import HardBoundsMonotonicityPINN, JointVariantConfig
+from result_paths import ensure_step_results_dir, find_step_result_file
 from sips_gauge_variant import SipsGaugeConfig, SipsGaugePINN
 from soft_baseline import SoftBaselinePINN, V1ModelConfig
 from unified_eval_harness import (
@@ -32,6 +33,7 @@ class VariantSpec:
     eval_metrics_file: str
     training_history_file: str
     checkpoint_file: str
+    results_step: int
     model_class: type[torch.nn.Module]
     config_class: type
 
@@ -43,6 +45,7 @@ VARIANT_SPECS = (
         "soft_baseline_eval_metrics.csv",
         "soft_baseline_training_history.csv",
         "soft_baseline_v1.pt",
+        3,
         SoftBaselinePINN,
         V1ModelConfig,
     ),
@@ -52,6 +55,7 @@ VARIANT_SPECS = (
         "all_hard_eval_metrics.csv",
         "all_hard_training_history.csv",
         "all_hard_v2_v8.pt",
+        8,
         AllHardSipsArrheniusPINN,
         AllHardConfig,
     ),
@@ -61,6 +65,7 @@ VARIANT_SPECS = (
         "hard_bounds_eval_metrics.csv",
         "hard_bounds_training_history.csv",
         "hard_bounds_v3.pt",
+        4,
         HardBoundsPINN,
         V1ModelConfig,
     ),
@@ -70,6 +75,7 @@ VARIANT_SPECS = (
         "hard_monotonicity_eval_metrics.csv",
         "hard_monotonicity_training_history.csv",
         "hard_monotonicity_v4.pt",
+        5,
         HardMonotonicityPINN,
         V1ModelConfig,
     ),
@@ -79,6 +85,7 @@ VARIANT_SPECS = (
         "sips_gauge_eval_metrics.csv",
         "sips_gauge_training_history.csv",
         "sips_gauge_v5.pt",
+        6,
         SipsGaugePINN,
         SipsGaugeConfig,
     ),
@@ -88,6 +95,7 @@ VARIANT_SPECS = (
         "arrhenius_eval_metrics.csv",
         "arrhenius_training_history.csv",
         "arrhenius_v6.pt",
+        7,
         ArrheniusPINN,
         ArrheniusConfig,
     ),
@@ -97,6 +105,7 @@ VARIANT_SPECS = (
         "joint_v7_eval_metrics.csv",
         "joint_v7_training_history.csv",
         "joint_v7.pt",
+        8,
         HardBoundsMonotonicityPINN,
         JointVariantConfig,
     ),
@@ -106,6 +115,7 @@ VARIANT_SPECS = (
         "all_hard_eval_metrics.csv",
         "all_hard_training_history.csv",
         "all_hard_v2_v8.pt",
+        8,
         AllHardSipsArrheniusPINN,
         AllHardConfig,
     ),
@@ -198,7 +208,11 @@ def read_training_summary(
     spec: VariantSpec,
     results_dir: Path,
 ) -> dict[str, float]:
-    history_path = results_dir / spec.training_history_file
+    history_path = find_step_result_file(
+        spec.training_history_file,
+        results_dir=results_dir,
+        step=spec.results_step,
+    )
 
     if not history_path.exists():
         return {
@@ -230,7 +244,11 @@ def load_main_effect_rows(results_dir: Path) -> pd.DataFrame:
     tables = []
 
     for spec in VARIANT_SPECS:
-        metrics_path = results_dir / spec.eval_metrics_file
+        metrics_path = find_step_result_file(
+            spec.eval_metrics_file,
+            results_dir=results_dir,
+            step=spec.results_step,
+        )
 
         if not metrics_path.exists():
             raise FileNotFoundError(f"Missing evaluation metrics: {metrics_path}")
@@ -827,12 +845,12 @@ def run_and_save_step9_analysis(
     random_state: int = 42,
     verbose: bool = True,
 ) -> dict[str, object]:
-    results_dir = Path(results_dir)
+    results_root = Path(results_dir)
+    results_dir = ensure_step_results_dir(results_root, step=9)
     checkpoint_dir = Path(checkpoint_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
 
-    long_table = load_main_effect_rows(results_dir)
-    main_effects_table = make_main_effects_table(long_table, results_dir)
+    long_table = load_main_effect_rows(results_root)
+    main_effects_table = make_main_effects_table(long_table, results_root)
 
     main_effects_long_path = results_dir / "step9_main_effects_long.csv"
     main_effects_table_path = results_dir / "step9_main_effects_table.csv"

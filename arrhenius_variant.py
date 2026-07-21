@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from data_pipeline import build_data_pipeline
+from result_paths import ensure_step_results_dir
 from soft_baseline import (
     R_GAS,
     ResidualBlock,
@@ -618,9 +619,8 @@ def run_and_save_arrhenius_exp(
 
     resolved_training_config = training_config or TrainingConfig()
     pipeline = build_data_pipeline(batch_size=batch_size)
-    results_dir = Path(results_dir)
+    results_dir = ensure_step_results_dir(results_dir, step=7)
     checkpoint_dir = Path(checkpoint_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     model, history, evaluation_results, arrhenius_verification = (

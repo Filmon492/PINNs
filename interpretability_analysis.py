@@ -9,6 +9,7 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
 from ablation_analysis import VARIANT_SPECS, load_variant_model
 from data_pipeline import build_data_pipeline
+from result_paths import ensure_step_results_dir
 from sips_gauge_variant import compute_parameter_shap_summary
 
 ANALYSIS_SPLITS = ("train", "validation", "T1", "T2", "T3")
@@ -659,8 +660,7 @@ def save_v5_parameter_shap_outputs(
     shap_table: pd.DataFrame,
     results_dir=Path("results"),
 ) -> dict[str, Path]:
-    results_dir = Path(results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = ensure_step_results_dir(results_dir, step=11)
     ranked_shap = rank_v5_parameter_shap(shap_table)
 
     paths = {
@@ -930,8 +930,7 @@ def save_global_shap_outputs(
     ranked_v5_parameter_shap: pd.DataFrame,
     results_dir=Path("results"),
 ) -> tuple[dict[str, Path], dict[str, pd.DataFrame]]:
-    results_dir = Path(results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = ensure_step_results_dir(results_dir, step=11)
     v1_ranked = rank_global_shap(v1_shap)
     v5_ranked = rank_global_shap(v5_shap)
     comparison, correlation = compare_v1_v5_global_shap(v1_shap, v5_shap)
@@ -985,8 +984,7 @@ def run_and_save_step11_interpretability(
     random_state: int = 42,
     verbose: bool = True,
 ) -> dict[str, object]:
-    results_dir = Path(results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = ensure_step_results_dir(results_dir, step=11)
     pipeline = build_data_pipeline(batch_size=batch_size)
 
     v5_model = load_trained_variant("V5", checkpoint_dir=checkpoint_dir, device=device)

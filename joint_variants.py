@@ -15,6 +15,7 @@ from hard_monotonicity_variant import (
     vant_hoff_loss_comp_only,
     verify_monotonicity,
 )
+from result_paths import ensure_step_results_dir
 from soft_baseline import (
     ResidualBlock,
     TrainingConfig,
@@ -479,9 +480,8 @@ def run_and_save_joint_v7_exp(
     resolved_training_config = training_config or TrainingConfig()
     pipeline = build_data_pipeline(batch_size=batch_size)
 
-    results_dir = Path(results_dir)
+    results_dir = ensure_step_results_dir(results_dir, step=8)
     checkpoint_dir = Path(checkpoint_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     model, history, evaluation_results, joint_verification = evaluate_joint_v7_model(

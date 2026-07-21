@@ -14,6 +14,7 @@ from arrhenius_variant import (
     verify_arrhenius_structure,
 )
 from data_pipeline import build_data_pipeline
+from result_paths import ensure_step_results_dir
 from sips_gauge_variant import verify_sips_structure
 from soft_baseline import (
     ResidualBlock,
@@ -498,9 +499,8 @@ def run_and_save_all_hard_exp(
     resolved_training_config = training_config or TrainingConfig()
     pipeline = build_data_pipeline(batch_size=batch_size)
 
-    results_dir = Path(results_dir)
+    results_dir = ensure_step_results_dir(results_dir, step=8)
     checkpoint_dir = Path(checkpoint_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     (
