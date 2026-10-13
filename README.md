@@ -18,6 +18,10 @@ The blueprint implementation is complete through Step 11:
 - Step 10: uncertainty calibration
 - Step 11: interpretability and physical parameter validation
 
+The numerical results summarized in `report.tex` and `report.pdf` are from the
+full training and evaluation protocol. Earlier leaner runs were used only as
+implementation checks while building the pipeline.
+
 ## Dataset
 
 The raw dataset contains methane adsorption measurements with:
@@ -85,7 +89,7 @@ This is needed for physics-based model layers and Sips-type constraints.
 
 ## Evaluation Tiers
 
-The pipeline currently builds three evaluation tiers:
+The pipeline builds three evaluation tiers:
 
 ```text
 T1: interpolation-style held-out experiments
@@ -101,7 +105,7 @@ coal_rank_inferred
 
 This rank is inferred from dry, ash-free volatile matter and fixed carbon. It is not a directly measured coal-rank label, so this should be stated clearly in any manuscript.
 
-The current default T2 held-out rank is:
+The default T2 held-out rank is:
 
 ```text
 Subbituminous / Lignite
@@ -133,6 +137,45 @@ The harness computes:
 - statistical comparison helpers
 - CSV export
 - LaTeX table export
+
+## Full-Protocol Result Summary
+
+The full soft-baseline physics-weight sweep selected:
+
+```text
+lambda_p = 0.05
+validation score = 4.916
+validation RMSE = 4.897
+validation violation rate = 0.004
+```
+
+The main RMSE winners by evaluation tier were:
+
+```text
+T1 interpolation:          V4 hard monotonicity, RMSE = 5.213
+T2 coal-rank extrapolation: V2/V8 all-hard combined, RMSE = 5.056
+T3 pressure extrapolation:  V7 hard bounds + monotonicity, RMSE = 1.192
+```
+
+T3 contains only three samples, so T3 results are treated as descriptive
+pressure-extrapolation evidence rather than strong statistical evidence.
+
+The hard-constrained variants passed their intended architecture-level physical
+verification checks. In particular:
+
+- V4 and V7 passed pressure-monotonicity checks with zero violation rate.
+- V5 and V2/V8 satisfied Sips bounds and pressure monotonicity with zero lower,
+  upper, and slope violation rates.
+- V6 and V2/V8 satisfied the Arrhenius identity to numerical precision.
+
+Uncertainty calibration was evaluated with 100 Monte Carlo dropout samples per
+model and split. The V7 hard-bounds and monotonicity model gave the lowest
+validation ECE, while the V2/V8 all-hard combined variants gave the lowest T1
+and T2 ECE values in the full-protocol table.
+
+The main conclusion is that hard constraints improve physical validity by
+construction, while predictive accuracy and calibration benefits depend on the
+evaluation tier.
 
 ## Running Checks
 
@@ -168,3 +211,10 @@ results/step11_interpretability/
 
 The experiment scripts now save directly into these step-specific folders by
 default. Steps 1 and 2 do not currently generate standalone result files.
+
+The generated `results/` and `checkpoints/` folders are ignored by Git because
+they contain generated artifacts and large model checkpoint files. For review,
+the project includes `SUPERVISOR_REVIEW.md`, which maps each blueprint step to
+the corresponding script and saved output folder. A separate supervisor review
+zip package can be shared through OneDrive when the generated outputs and
+checkpoints are needed.
