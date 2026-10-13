@@ -71,7 +71,7 @@ the T2 coal-rank extrapolation tier, coal-rank labels were constructed from the
 available coal-composition measurements: moisture, ash, and volatile matter.
 Volatile matter and fixed carbon were first expressed on a dry, ash-free basis,
 and threshold rules were then used to assign each sample to one coal rank. This
-produced four ranks in the current dataset: anthracite, low-volatile
+produced four ranks in the analyzed dataset: anthracite, low-volatile
 bituminous, medium-volatile bituminous, and subbituminous/lignite. The
 constructed coal-rank label is used only for T2 grouping and interpretation
 analyses, not as a model input.
@@ -79,8 +79,9 @@ analyses, not as a model input.
 \subsection{Preprocessing and feature engineering}
 
 Preprocessing makes the data valid, comparable, and suitable for training.
-Engineered features were also included to provide useful derived information to
-the model. The model input vector contains 12 numerical features:
+Engineered features were also included to represent derived thermodynamic and
+coal-composition information. The model input vector contains 12 numerical
+features:
 \[
     \mathbf{x} =
     [
@@ -217,13 +218,14 @@ or extrapolation performance.
 
 All model variants were trained using the same general training protocol. The
 training data were provided in mini-batches with a default batch size of 64.
-For each batch, the model predicted methane adsorption capacity and the relevant
+For each batch, the model predicted methane adsorption capacity and the variant-specific
 auxiliary physical quantities. The total loss was then computed from the
-data-fitting term and, where applicable, the physics-consistency terms.
+data-fitting term, together with the physics-consistency penalties for
+model variants that used soft penalty terms.
 
 Model parameters were optimized using the AdamW optimizer with learning rate
 \(10^{-3}\) and weight decay \(10^{-5}\). The full V1 physics-weight sweep used
-the intended network architecture with hidden dimensions
+the blueprint-specified network architecture with hidden dimensions
 \((512,1024,512,256,128)\), a maximum of 1000 epochs, early stopping patience of
 100 epochs, three random seeds, and five grouped cross-validation folds. The
 physics-loss weights were
@@ -253,7 +255,7 @@ fraction of negative adsorption predictions, the fraction of predictions above
 the predicted saturation capacity \(q_{\max}\), and the fraction of
 pressure--adsorption monotonicity violations. These metrics were used to assess
 whether a model only fit the data numerically or also respected the intended
-physical behavior.
+physical constraints.
 
 Uncertainty quality was evaluated using Monte Carlo dropout predictions and
 calibration metrics, including empirical interval coverage and expected
@@ -282,7 +284,8 @@ Calibration was evaluated by comparing nominal prediction intervals with their
 empirical coverage. For example, a well-calibrated 90\% prediction interval
 should contain the observed adsorption value for approximately 90\% of the
 samples. Expected calibration error (ECE) was computed as the average difference
-between nominal and empirical coverage across several interval levels.
+between nominal and empirical coverage across the evaluated prediction-interval
+levels.
 
 A scalar temperature-scaling factor was selected on the validation set to adjust
 the predicted uncertainty widths. The calibrated uncertainty estimates were then
@@ -295,8 +298,9 @@ coal-rank-extrapolation and high-pressure-extrapolation settings.
 \subsection{Interpretability and physical validation}
 
 Interpretability and physical validation were used to examine whether the
-trained models learned physically meaningful relationships. This included
-feature importance patterns, Sips parameter trends, and adsorption enthalpy
+trained models learned physically interpretable relationships between pressure,
+coal composition, and adsorption behavior. This included feature importance
+patterns, Sips parameter trends, and adsorption enthalpy
 behavior across coal ranks. Feature importance was evaluated using SHAP-style
 analyses for the baseline and Sips-gauge models. The learned Sips parameters
 \(\hat{q}_{\max}\), \(\hat{K}\), and \(\hat{n}\) were summarized by coal rank
@@ -307,6 +311,9 @@ whether the inferred temperature dependence was physically plausible.
 
 
 \section{Results and Discussion}
+
+All numerical results reported in this section were obtained from the full
+training and evaluation protocol described above.
 
 \subsection{Evaluation setup and data splits}
 
@@ -322,19 +329,19 @@ sizes are shown in Table~\ref{tab:data-splits}.
     \centering
     \begin{tabular}{lrr}
         \toprule
-        \textbf{Split} & \textbf{Samples} & \textbf{Experiments} \\
+        \textbf{Split}             & \textbf{Samples} & \textbf{Experiments} \\
         \midrule
-        Full dataset & 993 & 114 \\
-        Training pool excluding T2 & 752 & 86 \\
-        Training & 472 & 54 \\
-        Validation & 132 & 14 \\
-        T1 interpolation & 148 & 18 \\
-        T2 coal-rank extrapolation & 241 & 28 \\
-        T3 pressure extrapolation & 3 & 2 \\
+        Full dataset               & 993              & 114                  \\
+        Training pool excluding T2 & 752              & 86                   \\
+        Training                   & 472              & 54                   \\
+        Validation                 & 132              & 14                   \\
+        T1 interpolation           & 148              & 18                   \\
+        T2 coal-rank extrapolation & 241              & 28                   \\
+        T3 pressure extrapolation  & 3                & 2                    \\
         \bottomrule
     \end{tabular}
     \caption{Leakage-safe data splits used for training, validation, and
-    held-out evaluation.}
+        held-out evaluation.}
     \label{tab:data-splits}
 \end{table}
 
@@ -368,7 +375,8 @@ pressure monotonicity, Sips consistency, and temperature dependence. The purpose
 of the \(\lambda_p\) sweep is therefore to identify a balance between numerical
 accuracy and physical consistency. In practical terms, this analysis asks
 whether the model can fit the measured adsorption values while also reducing
-physically implausible behavior.
+violations such as negative adsorption, saturation-bound violations, or
+non-monotone pressure response.
 
 The full V1 sweep is shown in Table~\ref{tab:v1-lambda-sweep}. Model selection
 used a validation score that combines accuracy and physical validity,
@@ -390,21 +398,21 @@ combined validation score while keeping the violation rate close to zero.
     \begin{tabular}{rrrrrr}
         \toprule
         \(\boldsymbol{\lambda_p}\) & \textbf{Val. score}
-        & \textbf{Val. RMSE} & \textbf{Val. violation} & \textbf{Val. ECE}
-        & \textbf{Mean epochs} \\
+                                   & \textbf{Val. RMSE}   & \textbf{Val. violation} & \textbf{Val. ECE}
+                                   & \textbf{Mean epochs}                                                               \\
         \midrule
-        0.00 & 10.349 & 5.174 & 1.000 & 0.034 & 116.1 \\
-        0.01 & 5.041 & 5.018 & 0.004 & 0.049 & 154.5 \\
-        0.05 & \textbf{4.916} & \textbf{4.897} & 0.004 & 0.050 & 181.6 \\
-        0.10 & 5.050 & 5.002 & 0.010 & 0.052 & 213.4 \\
-        0.20 & 5.036 & 5.004 & 0.006 & 0.055 & 243.9 \\
-        0.50 & 4.969 & 4.966 & \textbf{0.001} & 0.056 & 315.3 \\
-        1.00 & 4.941 & 4.922 & 0.004 & 0.049 & 428.6 \\
-        2.00 & 5.843 & 5.840 & 0.001 & 0.064 & 445.5 \\
+        0.00                       & 10.349               & 5.174                   & 1.000             & 0.034 & 116.1 \\
+        0.01                       & 5.041                & 5.018                   & 0.004             & 0.049 & 154.5 \\
+        0.05                       & \textbf{4.916}       & \textbf{4.897}          & 0.004             & 0.050 & 181.6 \\
+        0.10                       & 5.050                & 5.002                   & 0.010             & 0.052 & 213.4 \\
+        0.20                       & 5.036                & 5.004                   & 0.006             & 0.055 & 243.9 \\
+        0.50                       & 4.969                & 4.966                   & \textbf{0.001}    & 0.056 & 315.3 \\
+        1.00                       & 4.941                & 4.922                   & 0.004             & 0.049 & 428.6 \\
+        2.00                       & 5.843                & 5.840                   & 0.001             & 0.064 & 445.5 \\
         \bottomrule
     \end{tabular}
     \caption{Full V1 physics-weight sweep using three seeds and five grouped
-    cross-validation folds. The selected value is \(\lambda_p=0.05\).}
+        cross-validation folds. The selected value is \(\lambda_p=0.05\).}
     \label{tab:v1-lambda-sweep}
 \end{table}
 
@@ -420,46 +428,47 @@ adsorption scale.
     \centering
     \begin{tabular}{lrrr}
         \toprule
-        \textbf{Variant} & \textbf{T1 RMSE} & \textbf{T2 RMSE} & \textbf{T3 RMSE} \\
+        \textbf{Variant}               & \textbf{T1 RMSE} & \textbf{T2 RMSE} & \textbf{T3 RMSE} \\
         \midrule
-        V1 soft baseline & 5.300 & 5.746 & 4.943 \\
-        V3 hard bounds & 5.624 & 5.903 & 2.217 \\
-        V4 hard monotonicity & \textbf{5.213} & 5.709 & 4.643 \\
-        V5 hard Sips gauge & 5.410 & 5.476 & 1.372 \\
-        V6 hard Van't Hoff / Arrhenius & 6.082 & 5.543 & 5.478 \\
-        V7 hard bounds + monotonicity & 7.116 & 6.145 & \textbf{1.192} \\
-        V2/V8 all-hard combined & 6.209 & \textbf{5.056} & 1.435 \\
+        V1 soft baseline               & 5.300            & 5.746            & 4.943            \\
+        V3 hard bounds                 & 5.624            & 5.903            & 2.217            \\
+        V4 hard monotonicity           & \textbf{5.213}   & 5.709            & 4.643            \\
+        V5 hard Sips gauge             & 5.410            & 5.476            & 1.372            \\
+        V6 hard Van't Hoff / Arrhenius & 6.082            & 5.543            & 5.478            \\
+        V7 hard bounds + monotonicity  & 7.116            & 6.145            & \textbf{1.192}   \\
+        V2/V8 all-hard combined        & 6.209            & \textbf{5.056}   & 1.435            \\
         \bottomrule
     \end{tabular}
     \caption{Full-protocol RMSE values for the soft baseline and
-    hard-constrained variants on the T1, T2, and T3 evaluation tiers.}
+        hard-constrained variants on the T1, T2, and T3 evaluation tiers.}
     \label{tab:rmse-comparison}
 \end{table}
 
-For the full saved runs, the hard monotonicity variant gives the lowest T1
+For the full-protocol results, the hard monotonicity variant gives the lowest T1
 RMSE, although its advantage over the soft baseline is small. On the T2
 coal-rank extrapolation tier, the V2/V8 all-hard combined variants give the
-lowest RMSE. This
-suggests that combining the Sips-gauge and Van't Hoff / Arrhenius structures can help when
-the model is evaluated on a coal rank withheld from training. On the T3
+lowest RMSE. Thus, in the full-protocol results, combining the Sips-gauge and
+Van't Hoff / Arrhenius structures gives the smallest error when the model is
+evaluated on a coal rank withheld from training. On the T3
 pressure-extrapolation tier, the joint hard-bounds and monotonicity variant gives the
-lowest RMSE, but this result should be interpreted carefully because T3 contains
-only three samples.
+lowest RMSE, but this T3 result is not treated as strong statistical evidence
+because T3 contains only three samples.
 
 These results illustrate the main comparison that the hard-variant analysis is
-designed to answer: different physical constraints may help in different
+designed to answer: different physical constraints have different effects across
 evaluation regimes. A constraint that improves interpolation does not
 necessarily give the best extrapolation result, and combining constraints can
-improve one tier while reducing performance on another. The strongest pattern
-is therefore conditional: hard constraints help most clearly for physical
-validity and for some extrapolation tiers, but they do not dominate every
-accuracy metric.
+improve one tier while reducing performance on another. The reported RMSE
+minima differ by evaluation tier: hard constraints help most clearly for
+physical validity and for selected extrapolation tiers, but they do not dominate
+every accuracy metric.
 
 \subsection{Physical validity of constrained architectures}
 
-Physical validity was evaluated separately from predictive accuracy. This is
-important because a model can have a low numerical error while still producing
-physically implausible behavior. The main physical checks were non-negative
+Physical validity was evaluated separately from predictive accuracy. This
+separation is necessary because a model can have a low numerical error while
+still producing negative adsorption, saturation violations, or decreasing
+adsorption with increasing pressure. The main physical checks were non-negative
 adsorption, adsorption below the predicted saturation capacity, non-decreasing
 adsorption with pressure, preservation of the Sips structure, and consistency
 with the Arrhenius/Van't Hoff temperature relation.
@@ -470,33 +479,34 @@ with the Arrhenius/Van't Hoff temperature relation.
         >{\raggedright\arraybackslash}p{0.28\linewidth}
         >{\raggedright\arraybackslash}p{0.39\linewidth}@{}}
         \toprule
-        \textbf{Variant} & \textbf{Physical check} & \textbf{Current result} \\
+        \textbf{Variant} & \textbf{Physical check}                         & \textbf{Verification result} \\
         \midrule
         V4 hard monotonicity
-        & \(\partial \hat{q}/\partial P \geq 0\)
-        & minimum slope \(=0.111\), violation rate \(=0\) \\
+                         & \(\partial \hat{q}/\partial P \geq 0\)
+                         & minimum slope \(=0.111\), violation rate \(=0\)                                \\
         V5 hard Sips gauge
-        & Sips bounds and monotonicity
-        & lower, upper, and slope violation rates \(=0\) \\
+                         & Sips bounds and monotonicity
+                         & lower, upper, and slope violation rates \(=0\)                                 \\
         V6 hard Van't Hoff / Arrhenius
-        & Arrhenius identity
-        & maximum identity error \(=1.82\times10^{-12}\) \\
+                         & Arrhenius identity
+                         & maximum identity error \(=1.82\times10^{-12}\)                                 \\
         V7 hard bounds + monotonicity
-        & \(\partial \hat{q}/\partial P \geq 0\)
-        & minimum slope \(=0.146\), violation rate \(=0\) \\
+                         & \(\partial \hat{q}/\partial P \geq 0\)
+                         & minimum slope \(=0.146\), violation rate \(=0\)                                \\
         V2/V8 all-hard combined
-        & Sips bounds and monotonicity
-        & lower, upper, and slope violation rates \(=0\) \\
+                         & Sips bounds and monotonicity
+                         & lower, upper, and slope violation rates \(=0\)                                 \\
         \bottomrule
     \end{tabular}
-    \caption{Architecture-level physical verification checks for the currently
-    saved hard-constrained variants.}
+    \caption{Architecture-level physical verification checks for the
+        full-protocol hard-constrained variants.}
     \label{tab:physical-verification}
 \end{table}
 
 The hard monotonicity variants passed the pressure-monotonicity verification:
 the computed pressure derivatives were non-negative on the tested pressure
-grid. The hard Sips-gauge variants also satisfied the intended Sips structure.
+grid. The hard Sips-gauge variants also satisfied the Sips-bounded,
+pressure-monotone structure.
 For V5, the minimum predicted adsorption was positive
 \((\min\hat{q}=0.0035)\), the minimum margin
 \(\hat{q}_{\max}-\hat{q}\) was positive \((0.029)\), and no lower-bound,
@@ -511,15 +521,16 @@ interpretation. For V6, the mean learned adsorption enthalpy was approximately
 expected range used by the verification script. For the V2/V8 all-hard combined
 variant, the
 Arrhenius identity was also satisfied, but the sampled enthalpy values did not
-fall in that expected range. This distinction is important: satisfying the
-mathematical form of a constraint does not automatically guarantee that all
-learned physical parameters are scientifically plausible.
+fall in that expected range. Thus, satisfying the mathematical form of a
+constraint does not automatically guarantee that all learned physical
+parameters are scientifically plausible.
 
 Overall, the physical-validity checks show the difference between soft and hard
 constraints. Soft constraints discourage violations through the loss function,
 whereas hard constraints remove certain violations from the model class itself.
-The full-run verification confirms that the implemented hard architectures
-enforce their intended structural properties.
+The full-protocol verification confirms that the implemented hard architectures
+enforce the targeted bounds, monotonicity, Sips-form, and Arrhenius-form
+properties.
 
 \subsection{Ablation and interaction effects}
 
@@ -535,39 +546,40 @@ variants, and the joint hard-constraint variant.
     \centering
     \begin{tabular}{@{}llrrrl@{}}
         \toprule
-        \textbf{Family} & \textbf{Tier} & \textbf{A only}
-        & \textbf{B only} & \textbf{Joint} & \textbf{Interaction} \\
+        \textbf{Family}       & \textbf{Tier}   & \textbf{A only}
+                              & \textbf{B only} & \textbf{Joint}  & \textbf{Interaction}                         \\
         \midrule
-        Bounds + monotonicity & T1 & 5.624 & 5.213 & 7.116 & antagonistic \\
-        Bounds + monotonicity & T2 & 5.903 & 5.709 & 6.145 & antagonistic \\
-        Bounds + monotonicity & T3 & 2.217 & 4.643 & 1.192 & superadditive \\
-        Sips + Van't Hoff & T1 & 5.410 & 6.082 & 6.209 & antagonistic \\
-        Sips + Van't Hoff & T2 & 5.476 & 5.543 & 5.056 & superadditive \\
-        Sips + Van't Hoff & T3 & 1.372 & 5.478 & 1.435 & superadditive \\
+        Bounds + monotonicity & T1              & 5.624           & 5.213                & 7.116 & antagonistic  \\
+        Bounds + monotonicity & T2              & 5.903           & 5.709                & 6.145 & antagonistic  \\
+        Bounds + monotonicity & T3              & 2.217           & 4.643                & 1.192 & superadditive \\
+        Sips + Van't Hoff     & T1              & 5.410           & 6.082                & 6.209 & antagonistic  \\
+        Sips + Van't Hoff     & T2              & 5.476           & 5.543                & 5.056 & superadditive \\
+        Sips + Van't Hoff     & T3              & 1.372           & 5.478                & 1.435 & superadditive \\
         \bottomrule
     \end{tabular}
-    \caption{Full-run Step~9 interaction summary using RMSE values. The
-    interaction label is computed from the factorial contrast in the ablation
-    script.}
+    \caption{Full-protocol ablation interaction summary using RMSE values. The
+        interaction label is computed from the factorial contrast in the ablation
+        script.}
     \label{tab:ablation-interactions}
 \end{table}
 
-The full-run ablation results indicate that single constraints and joint
+The full-protocol ablation results indicate that single constraints and joint
 constraints do not behave identically across the evaluation tiers. For T1, the
 single hard monotonicity model has the lowest RMSE, whereas the V2/V8 all-hard
-combined variants give the lowest T2 RMSE. This suggests that the most useful
-constraint can depend on whether the model is being tested in T1 interpolation or
-under coal-rank extrapolation. The interaction results are also tier-dependent:
+combined variants give the lowest T2 RMSE. Therefore, the constraint associated
+with the lowest error depends on whether the model is being tested in T1
+interpolation or under coal-rank extrapolation. The interaction results are
+also tier-dependent:
 bounds and monotonicity are antagonistic on T1 and T2 but superadditive on T3.
 The Sips and Van't Hoff combination is antagonistic on T1 and superadditive on
 T2 and T3. The T3 findings remain uncertain because T3 contains only three
 samples.
 
-The pairwise statistical analysis gives the same warning. In the regenerated
-Step~9 results, 2 of 28 pairwise RMSE comparisons were significant after
+The pairwise statistical analysis gives the same warning. In the full-protocol
+ablation results, 2 of 28 pairwise RMSE comparisons were significant after
 Bonferroni correction on T1, and 7 of 28 were significant on T2. No pairwise
 RMSE comparisons were significant on T3 after correction. This supports using
-T3 mainly as qualitative pressure-extrapolation evidence rather than as strong
+T3 mainly as descriptive pressure-extrapolation evidence rather than as strong
 statistical evidence.
 
 \subsection{Uncertainty calibration}
@@ -585,51 +597,51 @@ coverage of prediction intervals is closer to the nominal confidence levels.
     \small
     \begin{tabular}{lrrrrr}
         \toprule
-        \textbf{Variant} & \(\boldsymbol{\tau}\) & \textbf{Val. ECE}
-        & \textbf{T1 ECE} & \textbf{T2 ECE} & \textbf{T3 ECE} \\
+        \textbf{Variant}                      & \(\boldsymbol{\tau}\) & \textbf{Val. ECE}
+                                              & \textbf{T1 ECE}       & \textbf{T2 ECE}   & \textbf{T3 ECE}                          \\
         \midrule
-        V1 all-soft & 1.059 & 0.032 & 0.027 & 0.273 & 0.120 \\
-        V2 all-hard & 1.122 & 0.026 & \textbf{0.015} & \textbf{0.202} & 0.120 \\
-        V3 hard bounds & 1.334 & 0.042 & 0.053 & 0.242 & 0.120 \\
-        V4 hard monotonicity & 0.891 & 0.039 & 0.026 & 0.321 & 0.120 \\
-        V5 hard Sips & 1.122 & 0.041 & 0.032 & 0.276 & 0.120 \\
-        V6 hard Van't Hoff / Arrhenius & 1.259 & 0.045 & 0.036 & 0.308 & 0.120 \\
-        V7 hard bounds + monotonicity & 1.000 & \textbf{0.017} & 0.015 & 0.299 & 0.120 \\
-        V8 hard Sips + Van't Hoff / Arrhenius & 1.122 & 0.026 & \textbf{0.015} & \textbf{0.202} & 0.120 \\
+        V1 all-soft                           & 1.059                 & 0.032             & 0.027           & 0.273          & 0.120 \\
+        V2 all-hard                           & 1.122                 & 0.026             & \textbf{0.015}  & \textbf{0.202} & 0.120 \\
+        V3 hard bounds                        & 1.334                 & 0.042             & 0.053           & 0.242          & 0.120 \\
+        V4 hard monotonicity                  & 0.891                 & 0.039             & 0.026           & 0.321          & 0.120 \\
+        V5 hard Sips                          & 1.122                 & 0.041             & 0.032           & 0.276          & 0.120 \\
+        V6 hard Van't Hoff / Arrhenius        & 1.259                 & 0.045             & 0.036           & 0.308          & 0.120 \\
+        V7 hard bounds + monotonicity         & 1.000                 & \textbf{0.017}    & 0.015           & 0.299          & 0.120 \\
+        V8 hard Sips + Van't Hoff / Arrhenius & 1.122                 & 0.026             & \textbf{0.015}  & \textbf{0.202} & 0.120 \\
         \bottomrule
     \end{tabular}
-    \caption{Full-run calibrated ECE values for validation, T1 interpolation,
-    T2 coal-rank extrapolation, and T3 pressure extrapolation. Lower ECE
-    indicates better uncertainty calibration.}
+    \caption{Full-protocol calibrated ECE values for validation, T1 interpolation,
+        T2 coal-rank extrapolation, and T3 pressure extrapolation. Lower ECE
+        indicates better uncertainty calibration.}
     \label{tab:uq-calibration}
 \end{table}
 
-The full saved results show that validation calibration adjusts the uncertainty
+The full-protocol results show that validation calibration adjusts the uncertainty
 estimates for most variants. The V7 hard-bounds and monotonicity model obtains
 the lowest validation ECE, while the V2/V8 all-hard combined variants obtain
-the lowest T1 and T2 ECE values in the current table.
+the lowest T1 and T2 ECE values in Table~\ref{tab:uq-calibration}.
 
-The main pattern is that calibration on the validation set does not always
-transfer to extrapolation. Several hard variants have low T1 ECE but much
-higher T2 ECE. This means that their uncertainty intervals are reasonably
-calibrated for T1 interpolation samples, but less reliable for the withheld
-coal-rank extrapolation tier. In the full results, the V2/V8 all-hard combined
-variants give the smallest T2 ECE, suggesting that combining the hard Sips and
-hard Van't Hoff / Arrhenius structures gives the most stable uncertainty
-behavior under coal-rank extrapolation.
+The calibration results show that calibration on the validation set does not
+always transfer to extrapolation. All variants have higher ECE on T2 than on
+T1. This means that their uncertainty intervals are better calibrated for T1
+interpolation samples than for the withheld
+coal-rank extrapolation tier. In the full-protocol results, the V2/V8 all-hard combined
+variants give the smallest T2 ECE, indicating that combining the hard Sips and
+hard Van't Hoff / Arrhenius structures gives the lowest calibration error under
+coal-rank extrapolation.
 
 The epistemic uncertainty fraction also varies between variants. In general,
 larger uncertainty under the held-out tiers is consistent with the idea that
 the model expresses more model-form uncertainty when predictions are made
 farther from the training distribution. However, because T3 contains only three
-samples, the T3 uncertainty results should be treated as qualitative evidence
+samples, the T3 uncertainty results should be treated as descriptive evidence
 only.
 
 \subsection{Interpretability and physical validation}
 
 Interpretability analysis was used to check whether the trained models relied
-on physically meaningful variables and whether the learned physical parameters
-followed reasonable coal-rank trends. The analysis included SHAP-style feature
+on physically interpretable variables and whether the learned physical
+parameters varied systematically across coal ranks. The analysis included SHAP-style feature
 importance, learned Sips-parameter summaries, comparison with classical
 Langmuir fits, and adsorption enthalpy summaries from the Van't Hoff /
 Arrhenius model.
@@ -640,15 +652,15 @@ Arrhenius model.
         \toprule
         \textbf{Rank} & \textbf{V1 top feature} & \textbf{V5 top feature} \\
         \midrule
-        1 & Pr & pressure\_MPa \\
-        2 & FC & FC \\
-        3 & PT & volatile\_wt \\
-        4 & MV & MV \\
-        5 & pressure\_MPa & Tr \\
+        1             & Pr                      & pressure\_MPa           \\
+        2             & FC                      & FC                      \\
+        3             & PT                      & volatile\_wt            \\
+        4             & MV                      & MV                      \\
+        5             & pressure\_MPa           & Tr                      \\
         \bottomrule
     \end{tabular}
     \caption{Top five global feature-importance rankings for the soft baseline
-    and hard Sips-gauge model in the current Step~11 outputs.}
+        and hard Sips-gauge model from the full-protocol interpretability analyses.}
     \label{tab:interpretability-shap}
 \end{table}
 
@@ -656,7 +668,7 @@ For the hard Sips-gauge model, pressure was the most important input feature,
 followed by fixed carbon and volatile matter. This is physically sensible
 because the Sips-gauge architecture computes adsorption as a function of raw
 pressure and learned coal-dependent Sips parameters. The V1 and V5 feature
-rankings were weakly and not significantly aligned in the current outputs
+rankings were weakly and not significantly aligned in the full-protocol analyses
 (\(\rho_s=0.231\), \(p=0.471\)), showing that the hard Sips structure changes
 how the model distributes importance across pressure, temperature, and
 composition features.
@@ -666,19 +678,19 @@ composition features.
     \small
     \begin{tabular}{@{}llrrr@{}}
         \toprule
-        \textbf{Split} & \textbf{Coal rank} & \(\boldsymbol{\hat{q}_{\max}}\)
-        & \(\boldsymbol{\hat{n}}\) & \(\boldsymbol{\Delta H}\) \\
+        \textbf{Split} & \textbf{Coal rank}         & \(\boldsymbol{\hat{q}_{\max}}\)
+                       & \(\boldsymbol{\hat{n}}\)   & \(\boldsymbol{\Delta H}\)                       \\
         \midrule
-        Train & Anthracite & 24.66 & 1.53 & -45.52 \\
-        Train & Low-volatile bituminous & 20.80 & 1.22 & -46.00 \\
-        Train & Medium-volatile bituminous & 15.70 & 0.98 & -35.54 \\
-        T2 & Subbituminous/lignite & 10.25 & 0.75 & -25.09 \\
+        Train          & Anthracite                 & 24.66                           & 1.53 & -45.52 \\
+        Train          & Low-volatile bituminous    & 20.80                           & 1.22 & -46.00 \\
+        Train          & Medium-volatile bituminous & 15.70                           & 0.98 & -35.54 \\
+        T2             & Subbituminous/lignite      & 10.25                           & 0.75 & -25.09 \\
         \bottomrule
     \end{tabular}
     \caption{Selected coal-rank summaries of learned physical quantities.
-    \(\hat{q}_{\max}\) and \(\hat{n}\) are from V5, while
-    \(\Delta H\) is from V6 and is reported in
-    \(\mathrm{kJ\,mol^{-1}}\).}
+        \(\hat{q}_{\max}\) and \(\hat{n}\) are from V5, while
+        \(\Delta H\) is from V6 and is reported in
+        \(\mathrm{kJ\,mol^{-1}}\).}
     \label{tab:learned-physical-parameters}
 \end{table}
 
@@ -697,52 +709,56 @@ consistent with exothermic adsorption. Mean \(\Delta H\) values were inside the 
 reference range used by the verification script for all reported ranks. The
 rank effect was statistically significant for the training split, validation
 split, and T1 split. For T2 and T3, rank-wise statistical comparison was not
-possible because each contained only one inferred rank in the current split
+possible because each contained only one inferred rank in the full-protocol split
 definition.
 
 Overall, the interpretability results support the physical reading of the hard
 models: pressure controls the adsorption curve, coal composition affects the
 learned capacity, and the inferred thermodynamic quantities vary with coal
-rank. The current Step~11 outputs show that the hard-constraint models are
-inspectable in physically meaningful terms.
+rank. The interpretability analysis shows that the hard-constraint models can
+be examined through physical quantities such as Sips parameters,
+adsorption enthalpy, and coal-rank trends.
 
 \subsection{Summary of findings}
 
-The current analysis establishes the full evaluation structure for the study.
+The full-protocol analysis establishes the full evaluation structure for the study.
 The dataset was split at the experiment level, with separate tiers for
 T1 interpolation, T2 coal-rank extrapolation, and T3 pressure extrapolation.
 This makes it possible to evaluate not only whether a model fits known
-adsorption behavior, but also whether it behaves reasonably when the test data
-move away from the training distribution.
+adsorption behavior, but also whether its predictions remain physically valid
+when the test data move away from the training distribution.
 
-The hard-constrained models show the strongest numerical performance on several
-evaluation tiers, but not uniformly across all tiers. The hard monotonicity
-model gives the lowest T1 RMSE, the V2/V8 all-hard combined variants give the lowest T2 RMSE,
-and the joint hard-bounds and monotonicity model gives the lowest T3 RMSE. The
-T3 result is only qualitative because the T3 set contains three samples. The
+Different hard-constrained models achieve the lowest RMSE on the three
+evaluation tiers, but no single variant is best on every tier. The hard
+monotonicity model gives the lowest T1 RMSE, the V2/V8 all-hard combined
+variants give the lowest T2 RMSE, and the joint hard-bounds and monotonicity
+model gives the lowest T3 RMSE. The
+T3 result is descriptive rather than statistically conclusive because the T3 set
+contains three samples. The
 physical-verification checks show that the hard architectures enforce their
-intended structural properties, including non-negative adsorption, saturation
+targeted structural properties, including non-negative adsorption, saturation
 bounds, and pressure monotonicity.
 
-The ablation analysis suggests that physical constraints do not contribute in a
-single uniform way. Some constraints help more for interpolation, while others
-are more useful for extrapolation. The uncertainty analysis shows that
+The ablation analysis shows that physical constraints do not contribute in a
+single uniform way. The lowest-RMSE constraint choice changes between T1, T2,
+and T3. The uncertainty analysis shows that
 calibration fitted on the validation set does not always transfer cleanly to
 the coal-rank extrapolation tier. The interpretability analysis supports the
-physical reading of the models: pressure and fixed carbon are important
-features, learned Sips capacities vary with coal rank, and the Van't Hoff / Arrhenius model
+physical reading of the models: pressure and fixed carbon appear among the
+leading features, learned Sips capacities vary with coal rank, and the
+Van't Hoff / Arrhenius model
 produces negative adsorption enthalpy values consistent with exothermic
 adsorption.
 
 The main finding is that hard constraints improve physical validity by
 construction, while their effect on predictive accuracy and calibration depends
 on the evaluation tier. The full V1 tuning protocol strengthens the comparison
-with the soft baseline, but the small T3 sample size remains an important
-limitation.
+with the soft baseline, but the T3 set contains only three samples and therefore
+limits the strength of pressure-extrapolation claims.
 
 \section{Conclusions}
 
-The full saved results show that hard thermodynamic constraints provide a clear
+The full-protocol results show that hard thermodynamic constraints provide a clear
 advantage in physical validity, since the constrained architectures remove
 specific classes of violations by construction. However, this advantage does
 not translate into uniformly better predictive accuracy or uncertainty
@@ -751,7 +767,13 @@ monotonicity model performs best on T1, the V2/V8 all-hard combined variants per
 and the joint bounds--monotonicity model performs best on T3, although T3 is
 too small for strong statistical claims. Thus, hard constraints outperform soft
 penalties most clearly in guaranteed physical validity, while their accuracy
-and calibration benefits are conditional and come at the cost of additional
-architectural complexity and computational expense.
+and calibration benefits are conditional.
+
+\section{Further Work}
+
+A fair comparison of computational cost remains to be investigated. The present
+report compares predictive accuracy, physical validity, uncertainty
+calibration, and interpretability, but it does not systematically investigate the computational cost.
+
 
 \end{document}
