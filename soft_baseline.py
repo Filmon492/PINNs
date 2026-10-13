@@ -1,3 +1,11 @@
+"""Train and evaluate the V1 soft-constrained PINN baseline.
+
+This module defines the baseline neural-network architecture, physics-inspired
+soft loss terms, training and validation loops, lambda-p sensitivity analysis,
+cross-validation summaries, final checkpoint saving, and evaluation outputs for
+the soft-constraint model used as the reference variant in the project.
+"""
+
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -13,6 +21,7 @@ from result_paths import ensure_step_results_dir
 R_GAS = 8.314
 DEFAULT_LAMBDA_P_VALUES = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0)
 DEFAULT_RANDOM_SEEDS = (0, 1, 2)
+DEFAULT_SELECTION_PHYSICS_WEIGHT = 1.0
 
 
 @dataclass
@@ -44,6 +53,24 @@ def set_torch_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+# Combine validation error and physical violations for lambda-p selection.
+def compute_lambda_selection_score(
+    rmse: float,
+    violation_rate: float,
+    physics_weight: float = DEFAULT_SELECTION_PHYSICS_WEIGHT,
+) -> float:
+    if rmse < 0:
+        raise ValueError("RMSE must be nonnegative.")
+
+    if violation_rate < 0:
+        raise ValueError("violation_rate must be nonnegative.")
+
+    if physics_weight < 0:
+        raise ValueError("physics_weight must be nonnegative.")
+
+    return rmse * (1.0 + physics_weight * violation_rate)
 
 
 # Residual block with LayerNorm and Swish/SiLU activation.
@@ -528,7 +555,7 @@ def train_v1_model(
     return model, history
 
 
-# Train one V1 model per lambda_p value and select by validation RMSE.
+# Train one V1 model per lambda_p value and select by validation score.
 def run_lambda_sweep(
     train_loader,
     val_loader,
@@ -539,6 +566,7 @@ def run_lambda_sweep(
     training_config: Optional[TrainingConfig] = None,
     seed: int = 42,
     sweep_n_mc: int = 20,
+    selection_physics_weight: float = DEFAULT_SELECTION_PHYSICS_WEIGHT,
 ) -> tuple[list[dict[str, float]], dict[str, float]]:
     if not lambda_p_values:
         raise ValueError("lambda_p_values must contain at least one value.")
@@ -575,11 +603,17 @@ def run_lambda_sweep(
         val_accuracy = val_summary["accuracy"]
         val_physical = val_summary["physical"]
         val_uq = val_summary["uq"]
+        selection_score = compute_lambda_selection_score(
+            rmse=val_accuracy["RMSE"],
+            violation_rate=val_physical["violation_rate"],
+            physics_weight=selection_physics_weight,
+        )
         results.append(
             {
                 "lambda_p": float(lambda_p),
                 "epochs_trained": float(len(history)),
                 "best_epoch": best_row["epoch"],
+                "selection_val_score": selection_score,
                 "selection_val_RMSE": val_accuracy["RMSE"],
                 "selection_val_MAE": val_accuracy["MAE"],
                 "selection_val_R2": val_accuracy["R2"],
@@ -598,12 +632,12 @@ def run_lambda_sweep(
             }
         )
 
-    best_result = min(results, key=lambda row: row["selection_val_RMSE"])
+    best_result = min(results, key=lambda row: row["selection_val_score"])
 
     return results, best_result
 
 
-# Aggregate fold/seed sweep results and select lambda_p by mean validation RMSE.
+# Aggregate fold/seed sweep results and select lambda_p by mean validation score.
 def aggregate_cv_lambda_results(
     cv_results: list[dict[str, float]],
 ) -> tuple[list[dict[str, float]], dict[str, float]]:
@@ -613,6 +647,7 @@ def aggregate_cv_lambda_results(
     results_table = pd.DataFrame(cv_results)
     summary_rows: list[dict[str, float]] = []
     metrics_to_summarize = [
+        "selection_val_score",
         "selection_val_RMSE",
         "selection_val_MAE",
         "selection_val_R2",
@@ -644,8 +679,14 @@ def aggregate_cv_lambda_results(
 
     best_summary = min(
         summary_rows,
-        key=lambda row: row["selection_val_RMSE_mean"],
+        key=lambda row: row["selection_val_score_mean"],
     )
+    best_lambda_p = best_summary["lambda_p"]
+
+    for summary_row in summary_rows:
+        summary_row["selected_by_validation_score"] = float(
+            summary_row["lambda_p"] == best_lambda_p
+        )
 
     return summary_rows, best_summary
 
@@ -659,6 +700,7 @@ def run_cv_lambda_sweep(
     training_config: Optional[TrainingConfig] = None,
     max_folds: Optional[int] = None,
     sweep_n_mc: int = 20,
+    selection_physics_weight: float = DEFAULT_SELECTION_PHYSICS_WEIGHT,
 ) -> tuple[list[dict[str, float]], list[dict[str, float]], dict[str, float]]:
     if not seeds:
         raise ValueError("seeds must contain at least one random seed.")
@@ -693,6 +735,7 @@ def run_cv_lambda_sweep(
                 training_config=resolved_training_config,
                 seed=seed,
                 sweep_n_mc=sweep_n_mc,
+                selection_physics_weight=selection_physics_weight,
             )
 
             for result in fold_results:
@@ -717,6 +760,7 @@ def run_soft_baseline_exp(
     training_config: Optional[TrainingConfig] = None,
     seed: int = 42,
     sweep_n_mc: int = 20,
+    selection_physics_weight: float = DEFAULT_SELECTION_PHYSICS_WEIGHT,
     verbose: bool = True,
 ) -> tuple[list[dict[str, float]], dict[str, float]]:
     resolved_model_config = model_config or V1ModelConfig()
@@ -737,16 +781,21 @@ def run_soft_baseline_exp(
         training_config=resolved_training_config,
         seed=seed,
         sweep_n_mc=sweep_n_mc,
+        selection_physics_weight=selection_physics_weight,
     )
 
     if verbose:
         print("lambda_p sweep results")
-        print("lambda_p | epochs | best_epoch | val_RMSE | violation | ECE | val_total")
+        print(
+            "lambda_p | epochs | best_epoch | val_score | val_RMSE | "
+            "violation | ECE | val_total"
+        )
         for row in results:
             print(
                 f"{row['lambda_p']:>8.3g} | "
                 f"{row['epochs_trained']:>6.0f} | "
                 f"{row['best_epoch']:>10.0f} | "
+                f"{row['selection_val_score']:>9.4g} | "
                 f"{row['selection_val_RMSE']:>8.4g} | "
                 f"{row['selection_val_violation_rate']:>9.4g} | "
                 f"{row['selection_val_ECE']:>3.4g} | "
@@ -755,6 +804,7 @@ def run_soft_baseline_exp(
 
         print()
         print(f"Best lambda_p: {best_result['lambda_p']}")
+        print(f"Best validation score: {best_result['selection_val_score']:.6g}")
         print(f"Best validation RMSE: {best_result['selection_val_RMSE']:.6g}")
 
     return results, best_result
@@ -915,6 +965,7 @@ def run_and_save_soft_baseline_exp(
     sweep_n_mc: int = 20,
     seed: int = 42,
     max_folds: Optional[int] = None,
+    selection_physics_weight: float = DEFAULT_SELECTION_PHYSICS_WEIGHT,
     verbose: bool = True,
 ) -> dict[str, object]:
     from unified_eval_harness import save_results_csv
@@ -935,6 +986,7 @@ def run_and_save_soft_baseline_exp(
         training_config=resolved_training_config,
         max_folds=max_folds,
         sweep_n_mc=sweep_n_mc,
+        selection_physics_weight=selection_physics_weight,
     )
     cv_sweep_path = results_dir / "soft_baseline_cv_lambda_sweep.csv"
     cv_summary_path = results_dir / "soft_baseline_cv_lambda_summary.csv"
@@ -983,6 +1035,8 @@ def run_and_save_soft_baseline_exp(
             "seeds": list(seeds),
             "max_folds": max_folds,
             "sweep_n_mc": sweep_n_mc,
+            "selection_rule": "selection_val_RMSE * (1 + physics_weight * violation_rate)",
+            "selection_physics_weight": selection_physics_weight,
             "seed": seed,
         },
         checkpoint_path,

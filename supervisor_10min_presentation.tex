@@ -1,0 +1,380 @@
+\documentclass[aspectratio=169,10pt]{beamer}
+
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{siunitx}
+
+\definecolor{projectBlue}{HTML}{275DAD}
+\definecolor{projectTeal}{HTML}{0B7A75}
+\definecolor{projectOrange}{HTML}{D47A22}
+\definecolor{projectGray}{HTML}{52606D}
+\definecolor{projectLight}{HTML}{F4F7F9}
+\definecolor{projectInk}{HTML}{16202A}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{
+  \leavevmode%
+  \hbox{%
+    \begin{beamercolorbox}[wd=.9\paperwidth,ht=2.5ex,dp=1.2ex,leftskip=1em]{author in head/foot}
+    \end{beamercolorbox}%
+    \begin{beamercolorbox}[wd=.1\paperwidth,ht=2.5ex,dp=1.2ex,center]{author in head/foot}
+      \insertframenumber
+    \end{beamercolorbox}%
+  }%
+}
+
+\setbeamercolor{normal text}{fg=projectInk,bg=white}
+\setbeamercolor{frametitle}{fg=projectInk,bg=white}
+\setbeamercolor{title}{fg=projectInk}
+\setbeamercolor{subtitle}{fg=projectBlue}
+\setbeamercolor{structure}{fg=projectBlue}
+\setbeamercolor{block title}{fg=white,bg=projectBlue}
+\setbeamercolor{block body}{fg=projectInk,bg=projectLight}
+
+\setbeamerfont{title}{size=\LARGE,series=\bfseries}
+\setbeamerfont{subtitle}{size=\large,series=\bfseries}
+\setbeamerfont{frametitle}{size=\Large,series=\bfseries}
+\setbeamerfont{normal text}{size=\normalsize}
+\setbeamerfont{itemize/enumerate body}{size=\large}
+\setbeamerfont{itemize/enumerate subbody}{size=\normalsize}
+
+\newcommand{\smallgray}[1]{\textcolor{projectGray}{#1}}
+\newcommand{\best}[1]{\textbf{\textcolor{projectTeal}{#1}}}
+
+\title{Hard vs. Soft Constraint PINN Project}
+\author{Filmon Misgane}
+\date{}
+
+\begin{document}
+
+%------------------------------------------------
+\begin{frame}[plain]
+  \vspace{0.8cm}
+  {\usebeamerfont{title}\usebeamercolor[fg]{title}\inserttitle\par}
+
+  \vspace{0.8cm}
+  \begin{itemize}
+    \item What I have worked on
+    \item Current progress
+    \item Plan for finishing the project from the blueprint
+  \end{itemize}
+
+  \vfill
+  \begin{flushright}
+    \smallgray{Filmon Misgane}
+  \end{flushright}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Project question}
+  \smallgray{The comparison is about accuracy, physical validity, uncertainty, and compute cost.}
+
+  \vspace{0.5cm}
+  \begin{block}{Main question}
+    Does guaranteeing thermodynamic validity by construction outperform
+    penalizing violations, and what does it cost in accuracy, calibration,
+    and computational effort?
+  \end{block}
+
+  \vspace{0.3cm}
+  \begin{table}
+    \centering
+    \begin{tabular}{p{0.28\linewidth}p{0.58\linewidth}}
+      \toprule
+      \textbf{Evaluation focus} & \textbf{What we check}                                 \\
+      \midrule
+      Accuracy                  & Prediction error on measured methane adsorption        \\
+      Physical validity         & Bounds, monotonicity, Sips shape, and Arrhenius checks \\
+      Extrapolation             & Performance on withheld coal rank and high pressure    \\
+      Uncertainty               & Whether prediction intervals match observed errors     \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Data pipeline}
+  \smallgray{The first milestone was a leakage-safe split with fixed evaluation tiers.}
+
+  \vspace{0.25cm}
+  \begin{columns}[T,onlytextwidth]
+    \begin{column}{0.66\textwidth}
+      \begin{table}
+        \centering
+        \scriptsize
+        \begin{tabular}{lrr}
+          \toprule
+          \textbf{Split}                 & \textbf{Samples} & \textbf{Experiments} \\
+          \midrule
+          Full dataset                   & 993              & 114                  \\
+          Training pool excluding T2     & 752              & 86                   \\
+          Training                       & 472              & 54                   \\
+          Validation                     & 132              & 14                   \\
+          T1 interpolation               & 148              & 18                   \\
+          T2 coal-rank extrapolation     & 241              & 28                   \\
+          T3 pressure extrapolation      & 3                & 2                    \\
+          \bottomrule
+        \end{tabular}
+      \end{table}
+    \end{column}
+    \begin{column}{0.30\textwidth}
+      \textbf{Key pipeline choices}
+      \begin{itemize}
+        \item Experiment-level grouping
+        \item Train-only scaling
+        \item Raw positive pressure preserved
+        \item T2 holds out Subbituminous / Lignite
+      \end{itemize}
+    \end{column}
+  \end{columns}
+
+  \vspace{0.12cm}
+  \smallgray{\textbf{Note:} T3 is counted inside T1, so it is not added as an independent split.}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Blueprint progress}
+  \smallgray{The implementation is mostly complete. The remaining work is stronger runs and final writing.}
+
+  \vspace{0.35cm}
+  \begin{table}
+    \centering
+    \begin{tabular}{p{0.20\linewidth}p{0.30\linewidth}p{0.40\linewidth}}
+      \toprule
+      \textbf{Blueprint part} & \textbf{Status} & \textbf{Output}                              \\
+      \midrule
+      Steps 1--2              & Completed       & Data pipeline and unified evaluation harness \\
+      Steps 3--8              & Implemented     & Soft baseline and hard model variants        \\
+      Steps 9--11             & Implemented     & Ablation, UQ calibration, interpretability   \\
+      Current work            & In progress     & Results analysis and report refinement       \\
+      Next work               & Planned         & Final checking, writing, and packaging       \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}[fragile]{Completed training protocol}
+  \smallgray{The full V1 tuning run keeps the intended model size and uses the full cross-validation protocol.}
+
+  \vspace{0.25cm}
+  \begin{columns}[T,totalwidth=\linewidth]
+    \begin{column}{0.55\linewidth}
+      \textbf{\textcolor{projectBlue}{Full protocol now completed}}
+      \vspace{0.1cm}
+      {\fontsize{6}{7}\selectfont
+        \begin{verbatim}
+hidden_dims = (512, 1024, 512, 256, 128)
+max_epochs = 1000
+patience = 100
+lambda_p_values = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0)
+seeds = (0, 1, 2)
+max_folds = 5
+      \end{verbatim}}
+    \end{column}
+    \begin{column}{0.39\linewidth}
+      \textbf{\textcolor{projectBlue}{What this means}}
+      \vspace{0.15cm}
+      {\small
+        \begin{itemize}
+          \item 15 validation runs per \(\lambda_p\)
+          \item 120 V1 tuning runs in total
+          \item Final V1 checkpoint uses \(\lambda_p=0.05\)
+        \end{itemize}}
+    \end{column}
+  \end{columns}
+
+  \vspace{0.25cm}
+  \smallgray{The remaining work is interpretation, report polishing, and reproducibility checking.}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Model variants}
+  \smallgray{The models compare soft penalties with hard architectural constraints.}
+
+  \vspace{0.25cm}
+  \begin{table}
+    \centering
+    \scriptsize
+    \begin{tabular}{lll}
+      \toprule
+      \textbf{Variant} & \textbf{Constraint design} & \textbf{Purpose}                                    \\
+      \midrule
+      V1               & All soft penalties         & Reference model                                     \\
+      V3               & Hard bounds                & Force adsorption below learned capacity             \\
+      V4               & Hard pressure monotonicity & Force adsorption to increase with pressure          \\
+      V5               & Hard Sips gauge            & Build the pressure--adsorption curve into the model \\
+      V6               & Hard Van't Hoff / Arrhenius & Constrain temperature dependence                   \\
+      V7               & Hard bounds + monotonicity  & Test interaction between two constraints           \\
+      V2/V8            & All-hard combined variants  & Test maximum enforcement                           \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.2cm}
+  \smallgray{V4 pressure isolation follows the blueprint: \texttt{pressure\_MPa}, \texttt{Pr}, and \texttt{PT} are excluded from the free branch.}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Soft-baseline selection}
+  \smallgray{The soft baseline chooses \(\lambda_p\) using validation accuracy and physical validity.}
+
+  \vspace{0.2cm}
+  \begin{align*}
+    \mathcal{L}_{total}
+     & = \mathcal{L}_{data} + \lambda_p \mathcal{L}_{physics}                                      \\
+    s_{val}
+     & = \mathrm{RMSE}_{val}\left(1 + v_{val}\right)                                               \\
+    v_{val}
+     & = \max\{\text{\texttt{neg\_rate}},\text{\texttt{sat\_rate}},\text{\texttt{nonmono\_rate}}\}
+  \end{align*}
+
+  \vspace{-0.15cm}
+  \smallgray{\(s_{val}\) is the selection score. \(v_{val}\) is the largest validation rule violation.}
+
+  \vspace{0.08cm}
+  \begin{table}
+    \centering
+    \scriptsize
+    \begin{tabular}{rrrr}
+      \toprule
+      \(\lambda_p\) & \textbf{Val. score} & \textbf{Val. RMSE} & \textbf{Violation rate} \\
+      \midrule
+      0.00          & 10.349              & 5.174              & 1.000                   \\
+      0.05          & \best{4.916}        & \best{4.897}       & 0.004                   \\
+      0.50          & 4.969               & 4.966              & \best{0.001}            \\
+      1.00          & 4.941               & 4.922              & 0.004                   \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.15cm}
+  \smallgray{The full run selects \(\lambda_p=0.05\). It keeps the validation RMSE low while reducing the validation violation rate sharply.}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Full protocol RMSE results}
+  \smallgray{Lower values mean smaller adsorption prediction error.}
+
+  \vspace{0.25cm}
+  \begin{table}
+    \centering
+    \begin{tabular}{lrrr}
+      \toprule
+      \textbf{Variant}              & \textbf{T1 RMSE} & \textbf{T2 RMSE} & \textbf{T3 RMSE} \\
+      \midrule
+      V1 soft baseline              & 5.300            & 5.746            & 4.943            \\
+      V3 hard bounds                & 5.624            & 5.903            & 2.217            \\
+      V4 hard monotonicity          & \best{5.213}     & 5.709            & 4.643            \\
+      V5 hard Sips gauge            & 5.410            & 5.476            & 1.372            \\
+      V6 hard Van't Hoff / Arrhenius & 6.082           & 5.543            & 5.478            \\
+      V7 hard bounds + monotonicity & 7.116            & 6.145            & \best{1.192}     \\
+      V2/V8 all-hard combined       & 6.209            & \best{5.056}     & 1.435            \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.2cm}
+  \smallgray{Current pattern: V4 is best on T1, V2/V8 is best on T2, and V7 is best on T3. The V1 row uses the selected \(\lambda_p=0.05\) model. T3 has only 3 samples.}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Physical validity and trade-offs}
+  \smallgray{Hard constraints remove selected violations by construction.}
+
+  \vspace{0.25cm}
+  \begin{table}
+    \centering
+    \scriptsize
+    \begin{tabular}{p{0.24\linewidth}p{0.28\linewidth}p{0.38\linewidth}}
+      \toprule
+      \textbf{Check}  & \textbf{Current result}                      & \textbf{Interpretation}                             \\
+      \midrule
+      V4 monotonicity & Minimum slope 0.111; violation rate 0        & Pressure isolation matches the blueprint            \\
+      V5 Sips gauge   & Predictions stayed physically valid          & Pressure--adsorption shape is built in              \\
+      V6 Arrhenius    & Identity error \(1.82\times 10^{-12}\)       & Temperature relation holds numerically              \\
+      V2/V8 all hard  & Sips checks pass                             & All checked Sips rules pass                         \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.25cm}
+  \begin{block}{Trade-off to discuss}
+    V4 satisfies the monotonicity check and performs best on T1, but no hard
+    variant wins every tier. This supports a careful conclusion rather than a
+    broad claim that hard constraints always improve accuracy.
+  \end{block}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Uncertainty calibration}
+  \smallgray{Lower ECE means the predicted uncertainty matches the observed errors better.}
+
+  \vspace{0.25cm}
+  \begin{table}
+    \centering
+    \scriptsize
+    \begin{tabular}{lrrrr}
+      \toprule
+      \textbf{Variant}              & \textbf{Val. ECE} & \textbf{T1 ECE} & \textbf{T2 ECE} & \textbf{T3 ECE} \\
+      \midrule
+      V1 soft baseline              & 0.032             & 0.027           & 0.273           & 0.120           \\
+      V3 hard bounds                & 0.042             & 0.053           & 0.242           & 0.120           \\
+      V4 hard monotonicity          & 0.039             & 0.026           & 0.321           & 0.120           \\
+      V5 hard Sips gauge            & 0.041             & 0.032           & 0.276           & 0.120           \\
+      V6 hard Van't Hoff / Arrhenius & 0.045            & 0.036           & 0.308           & 0.120           \\
+      V7 hard bounds + monotonicity & \best{0.017}      & 0.015           & 0.299           & 0.120           \\
+      V2/V8 all-hard combined       & 0.026             & \best{0.015}    & \best{0.202}    & 0.120           \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.2cm}
+  {\small
+    \begin{itemize}
+      \item Uncertainty estimates are less reliable on T2. V2/V8 has the lowest T2 ECE in the full run.
+      \item T3 ECE is included for completeness, but it has only 3 samples.
+    \end{itemize}}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Conclusion based on the full protocol}
+  \begin{block}{Current answer}
+    Hard constraints help most clearly with physical validity. Their accuracy
+    and uncertainty benefits depend on the model variant and evaluation tier.
+  \end{block}
+
+  \vspace{0.25cm}
+  {\small
+    \begin{itemize}
+      \item Physical validity: hard variants remove the targeted violations by design.
+      \item Accuracy: V4 is best on T1, V2/V8 is best on T2, and V7 is best on T3.
+      \item Calibration: V2/V8 has the lowest T2 ECE, while V7 has the lowest validation ECE.
+            %\item Cost: hard variants need more specialized architecture and stronger verification.
+      \item Next step: finalize the report discussion and reproducibility package.
+    \end{itemize}}
+\end{frame}
+
+%------------------------------------------------
+\begin{frame}{Plan for the rest of the project}
+  \smallgray{The main remaining work is writing, checking, and packaging.}
+
+  \vspace{0.25cm}
+  \begin{table}
+    \centering
+    \scriptsize
+    \begin{tabular}{p{0.22\linewidth}p{0.34\linewidth}p{0.34\linewidth}}
+      \toprule
+      \textbf{Work}         & \textbf{Why it matters}                      & \textbf{Expected progress}                         \\
+      \midrule
+      Verify outputs      & Confirms tables match saved CSV files       & Mostly complete after the full run          \\
+      Finish report draft & Summarizes methods, results, and limits     & Results discussion needs final polishing    \\
+      Supervisor review   & Checks scientific interpretation            & Useful before final manuscript writing      \\
+      Final package       & Makes the project reproducible              & Clean results, README, figures, and report  \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+\end{frame}
+
+\end{document}

@@ -1,3 +1,11 @@
+"""Build the project data pipeline for methane adsorption modeling.
+
+This module loads and validates the coal-gas CSV, infers experiment IDs and
+coal rank, engineers the model features, creates leakage-safe train/validation
+and T1/T2/T3 evaluation splits, fits train-only scalers, and returns PyTorch
+datasets/loaders with raw pressure preserved for physics-constrained models.
+"""
+
 import warnings
 from pathlib import Path
 
@@ -784,10 +792,47 @@ def build_data_pipeline(
     }
 
 
+# Build the split-summary table used as Table 1 in the report.
+def make_split_summary_table(pipeline: dict) -> pd.DataFrame:
+    splits = pipeline["splits"]
+    split_rows = [
+        ("Full dataset", "full"),
+        ("Training pool excluding T2", "train_pool"),
+        ("Training", "train"),
+        ("Validation", "validation"),
+        ("T1 interpolation", "T1"),
+        ("T2 coal-rank extrapolation", "T2"),
+        ("T3 high-pressure extrapolation", "T3"),
+    ]
+
+    rows = []
+    for split_label, split_key in split_rows:
+        split_df = splits[split_key]
+        rows.append(
+            {
+                "Split": split_label,
+                "Samples": int(len(split_df)),
+                "Experiments": int(split_df["experiment_id"].nunique()),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+# Print the report Table 1 numbers directly from the current pipeline.
+def print_split_summary_table(pipeline: dict) -> None:
+    summary = make_split_summary_table(pipeline)
+    print(summary.to_string(index=False))
+
+
 if __name__ == "__main__":
     pipeline = build_data_pipeline()
     splits = pipeline["splits"]
     arrays = pipeline["arrays"]
+
+    print("Table 1 split summary:")
+    print_split_summary_table(pipeline)
+    print()
 
     df = splits["full"]
     train_df = splits["train"]

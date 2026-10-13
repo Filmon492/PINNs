@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +20,8 @@ from soft_baseline import (
     sips_loss,
     summarize_validation_metrics,
 )
+
+DEFAULT_PRESSURE_DEPENDENT_FEATURE_INDICES = (4, 6, 10)
 
 
 # Linear layer whose effective weights are always non-negative.
@@ -44,6 +46,13 @@ class PositiveLinear(nn.Module):
         weight = F.softplus(self.weight_raw)
 
         return F.linear(x, weight, self.bias)
+
+
+@dataclass
+class HardMonotonicityConfig(V1ModelConfig):
+    pressure_dependent_feature_indices: tuple[int, ...] = (
+        DEFAULT_PRESSURE_DEPENDENT_FEATURE_INDICES
+    )
 
 
 # Pressure-only pathway with non-negative weights and monotone activations.
@@ -103,11 +112,33 @@ class MonotoneAdsorptionHead(nn.Module):
 class HardMonotonicityPINN(nn.Module):
     def __init__(self, config: Optional[V1ModelConfig] = None):
         super().__init__()
-        self.config = config or V1ModelConfig()
+        self.config = config or HardMonotonicityConfig()
+        pressure_dependent_indices = set(
+            getattr(
+                self.config,
+                "pressure_dependent_feature_indices",
+                DEFAULT_PRESSURE_DEPENDENT_FEATURE_INDICES,
+            )
+        )
+        pressure_dependent_indices.add(self.config.pressure_feature_idx)
+
+        invalid_indices = [
+            idx
+            for idx in pressure_dependent_indices
+            if idx < 0 or idx >= self.config.input_dim
+        ]
+        if invalid_indices:
+            raise ValueError(
+                f"Pressure-dependent feature indices are out of range: {invalid_indices}"
+            )
+
+        self.pressure_dependent_feature_indices = tuple(
+            sorted(pressure_dependent_indices)
+        )
         self.comp_feature_indices = tuple(
             idx
             for idx in range(self.config.input_dim)
-            if idx != self.config.pressure_feature_idx
+            if idx not in self.pressure_dependent_feature_indices
         )
 
         comp_input_dim = len(self.comp_feature_indices)
@@ -126,15 +157,14 @@ class HardMonotonicityPINN(nn.Module):
 
         self.comp_encoder = nn.Sequential(*blocks)
         self.pressure_pathway = MonotonePressurePathway()
-        combined_dim = current_dim + self.pressure_pathway.output_dim
 
         self.mean_head = MonotoneAdsorptionHead(
             comp_dim=current_dim,
             pressure_dim=self.pressure_pathway.output_dim,
             softplus_epsilon=self.config.softplus_epsilon,
         )
-        self.logvar_head = nn.Linear(combined_dim, 1)
-        self.physics_head = nn.Linear(combined_dim, 4)
+        self.logvar_head = nn.Linear(current_dim, 1)
+        self.physics_head = nn.Linear(current_dim, 4)
 
     def forward(
         self,
@@ -150,18 +180,17 @@ class HardMonotonicityPINN(nn.Module):
         x_comp = x[:, self.comp_feature_indices]
         h_comp = self.comp_encoder(x_comp)
         h_pressure = self.pressure_pathway(raw_pressure)
-        h = torch.cat([h_comp, h_pressure], dim=1)
 
         q_hat = self.mean_head(h_comp, h_pressure)
         log_sigma2 = torch.clamp(
-            self.logvar_head(h),
+            self.logvar_head(h_comp),
             min=self.config.min_log_sigma2,
             max=self.config.max_log_sigma2,
         )
         sigma_ale = torch.exp(0.5 * log_sigma2)
 
         eps = self.config.softplus_epsilon
-        physics_params = F.softplus(self.physics_head(h)) + eps
+        physics_params = F.softplus(self.physics_head(h_comp)) + eps
         q_max = physics_params[:, 0:1]
         K = physics_params[:, 1:2]
         n = physics_params[:, 2:3]
@@ -568,7 +597,7 @@ def evaluate_hard_monotonicity_model(
 ) -> tuple[HardMonotonicityPINN, list[dict[str, float]], dict[str, dict], dict]:
     from unified_eval_harness import evaluate_model
 
-    resolved_model_config = model_config or V1ModelConfig()
+    resolved_model_config = model_config or HardMonotonicityConfig()
     resolved_training_config = training_config or TrainingConfig()
     scaler = pipeline["scaler"]
     temperature_idx = resolved_model_config.temperature_feature_idx
@@ -624,7 +653,7 @@ def run_and_save_hard_monotonicity_exp(
 ) -> dict[str, object]:
     from unified_eval_harness import save_results_csv
 
-    resolved_model_config = model_config or V1ModelConfig()
+    resolved_model_config = model_config or HardMonotonicityConfig()
     resolved_training_config = training_config or TrainingConfig()
     pipeline = build_data_pipeline(batch_size=batch_size)
 
